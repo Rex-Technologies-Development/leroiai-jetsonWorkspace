@@ -23,7 +23,7 @@ def generate_launch_description():
                 "heartbeat_period_sec": 1.0,
                 "status_period_sec": 1.0,
 
-                "debug_log_rx": False,
+                "debug_log_rx": True,
                 "debug_log_tx": True,
 
                 "drop_tx_when_disconnected": True,
