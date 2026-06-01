@@ -41,23 +41,55 @@ Below is a short summary for each package followed by details.
 
 ### `leroi_bringup` (ament_python)
 
-Launch files for starting the stack.
+Bringup / launch package for the workspace. It contains launch files that start one or more nodes together and pass common parameters.
 
-- Launch files: `perception.launch.py`, `robot.launch.py`
+- Launch files: `perception.launch.py`, `robot.launch.py` (installed via `setup.py` data files)
+- What they do: the provided launch files start the `perception_node` from `leroi_perception` and set a small set of default parameters (for example `publish_rate_hz` and `enable_fake_detections`). Edit or add launch files here to compose multiple nodes for your robot.
 - Example:
-	- `ros2 launch leroi_bringup perception.launch.py`
+
+```bash
+ros2 launch leroi_bringup perception.launch.py
+```
 
 ### `leroi_perception` (ament_python)
 
-Perception node. Today it publishes a heartbeat and (optionally) **fake** detections as JSON for end-to-end plumbing.
+Full-featured perception package providing `PerceptionNode` (entrypoint `perception_node`). The node supports multiple camera sources (including OAK), an MJPEG preview stream, and an optional YOLO inference pipeline.
 
-- Node: `perception_node` (`ros2 run leroi_perception perception_node`)
-- Topics:
-	- `/perception/status` (`std_msgs/String`) — "perception_node alive"
-	- `/perception/detections` (`std_msgs/String`) — JSON string payload
-- Parameters:
-	- `publish_rate_hz` (double, default `2.0`)
-	- `enable_fake_detections` (bool, default `true`)
+- Node entrypoint: `perception_node` (`ros2 run leroi_perception perception_node`) — registered in `setup.py` as `leroi_perception.perception_node:main`.
+- Main features:
+	- Camera source abstraction via `create_camera_source` (configured by `camera_type`, `camera_index`, `oak_mxid`, and resolution).
+	- MJPEG preview streamer (`enable_preview_stream`, `preview_port`, `preview_jpeg_quality`) that serves a live preview (default host 0.0.0.0).
+	- Optional YOLO detector wrapper (`YoloDetector`) with parameters to control model path, device, confidence, image size, and half precision.
+	- Background camera reader thread plus timers for preview framing, status updates, and YOLO inference.
+- Topics (per-camera):
+	- `/perception/<camera_name>/status` (`std_msgs/String`) — JSON status packet including timestamps, counts, and runtime stats.
+	- `/perception/<camera_name>/detections` (`std_msgs/String`) — JSON detection packet with fields such as `frame_id`, `image_width`, `image_height`, `detection_count`, and `detections` (each detection contains `class_name`, `class_id`, `confidence`, `x,y,z`, and `bbox_*` keys when available).
+- Important node parameters (defaults taken from the node implementation):
+	- Camera: `camera_name`=`oak_front`, `camera_type`=`oak`, `camera_index`=0, `camera_width`=640, `camera_height`=480, `camera_fps`=30, `oak_mxid`=""
+	- Rates: `preview_rate_hz`=30.0, `status_rate_hz`=2.0, `yolo_rate_hz`=15.0
+	- YOLO: `enable_yolo`=False, `yolo_model_path`="", `yolo_confidence`=0.35, `yolo_image_size`=320, `yolo_device`="cpu", `yolo_use_half`=False
+	- Preview: `enable_preview_stream`=True, `preview_port`=8080, `preview_jpeg_quality`=70, `draw_detections`=True
+
+Examples:
+
+Run via bringup launch (uses defaults set in the launch file):
+
+```bash
+ros2 launch leroi_bringup perception.launch.py
+```
+
+Run node directly and enable YOLO with a model path:
+
+```bash
+ros2 run leroi_perception perception_node --ros-args \
+	-p enable_yolo:=true \
+	-p yolo_model_path:="/path/to/best.pt" \
+	-p yolo_device:=0
+```
+
+Notes:
+- The node publishes JSON-encoded messages on the status and detections topics to keep interfaces simple while custom messages are developed in `leroi_interfaces`.
+- The preview streamer serves frames to `http://<host>:<preview_port>` when enabled.
 
 ### `leroi_decision` (ament_python)
 
@@ -99,6 +131,26 @@ Note: At the moment this package contains only the CMake/package scaffolding (no
 - `colcon` + standard ROS 2 build tools
 
 On a machine with ROS 2 installed, you should have access to `colcon` and `ros2` on your PATH after sourcing the ROS setup script.
+
+## Device permissions
+
+If the perception stack uses a USB camera or an OAK camera, and if the serial messenger uses a USB serial device, you may need to add your user to the right Linux groups.
+
+Check the device names first:
+
+```bash
+ls -l /dev/video*
+ls -l /dev/ttyACM*
+```
+
+Common permission fixes:
+
+```bash
+sudo usermod -aG video $USER
+sudo usermod -aG dialout $USER
+```
+
+After running those commands, log out and log back in so the group changes take effect.
 
 ## Build
 
@@ -153,6 +205,7 @@ ros2 topic echo /perception/detections
 
 ## Roadmap / WIP
 
+- Rebuild ONNX model and TensorRT engine at `imgsz=640` (TODO: export ONNX at 640 and rebuild engine for higher accuracy).
 - Replace `leroi_perception` fake detections with OAK + YOLO pipeline outputs.
 - Define real custom messages/services in `leroi_interfaces` (instead of JSON `std_msgs/String`).
 - Implement ROS 2 pub/sub wiring in `leroi_decision` + `leroi_policy` (consume detections, produce actions).

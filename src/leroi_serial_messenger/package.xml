@@ -1,14 +1,18 @@
 <?xml version="1.0"?>
-<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>leroi_serial_messenger</name>
-  <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="leoxie080808@gmail.com">leroi-ultio</maintainer>
-  <license>TODO: License declaration</license>
+  <version>0.0.1</version>
+  <description>Serial bridge between Jetson ROS 2 and VEX V5 brain.</description>
+
+  <maintainer email="notes.leozhieh@gmail.com">Leo Zhieh</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
 
   <depend>rclpy</depend>
-  <depend>leroi_interfaces</depend>
+  <depend>std_msgs</depend>
+
+  <exec_depend>python3-serial</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
