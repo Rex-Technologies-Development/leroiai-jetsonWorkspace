@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Any, Dict, List
 
 
@@ -6,7 +7,7 @@ class YoloDetector:
         self,
         model_path: str,
         confidence_threshold: float = 0.35,
-        image_size: int = 640,
+        image_size: int = 320,
         device: str = "0",
         use_half: bool = False,
     ):
@@ -19,7 +20,7 @@ class YoloDetector:
             ) from exc
 
         if not model_path:
-            raise ValueError("model_path is empty. Set yolo_model_path to your .pt file.")
+            raise ValueError("model_path is empty. Set yolo_model_path.")
 
         self.model_path = model_path
         self.confidence_threshold = confidence_threshold
@@ -27,22 +28,25 @@ class YoloDetector:
         self.device = device
         self.use_half = use_half
 
-        self.model = YOLO(model_path)
+        self.model_suffix = Path(model_path).suffix.lower()
+        self.is_tensorrt_engine = self.model_suffix == ".engine"
+
+        # task="detect" removes Ultralytics warning for TensorRT engines.
+        self.model = YOLO(model_path, task="detect")
 
     def detect(self, frame) -> List[Dict[str, Any]]:
         predict_args = {
             "verbose": False,
             "imgsz": self.image_size,
             "conf": self.confidence_threshold,
-            "half": self.use_half,
         }
 
-        # device examples:
-        # "0"   -> CUDA device 0
-        # "cpu" -> CPU
-        # ""    -> Ultralytics default
-        if self.device:
-            predict_args["device"] = self.device
+        # TensorRT engines already know their backend/device.
+        # Passing device/half is mainly useful for .pt models.
+        if not self.is_tensorrt_engine:
+            if self.device:
+                predict_args["device"] = self.device
+            predict_args["half"] = self.use_half
 
         results = self.model(frame, **predict_args)
 

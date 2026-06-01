@@ -44,8 +44,8 @@ from launch import LaunchDescription
 from launch_ros.actions import Node
 
 
-MODEL_PATH = "/home/leroi-ultio/leroiai-jetsonWorkspace/models/yolo/best.pt"
-
+# MODEL_PATH = "/home/leroi-ultio/leroiai-jetsonWorkspace/models/yolo/best.pt"
+MODEL_PATH = "/home/leroi-ultio/leroiai-jetsonWorkspace/models/yolo/best_fp16.engine"
 
 def generate_launch_description():
     oak_front = Node(
@@ -66,21 +66,24 @@ def generate_launch_description():
                 "enable_yolo": True,
                 "yolo_model_path": MODEL_PATH,
                 "yolo_confidence": 0.35,
-                "yolo_image_size": 640,
+                "yolo_image_size": 320,
                 "yolo_device": "cpu",
                 "yolo_use_half": False,
                 "yolo_rate_hz": 15.0,
 
                 "enable_yolo": True,
-                "yolo_model_path": "/home/leroi-ultio/leroiai-jetsonWorkspace/models/yolo/best.pt",
+                # "yolo_model_path": "/home/leroi-ultio/leroiai-jetsonWorkspace/models/yolo/best.pt",
 
                 "publish_rate_hz": 30.0,
                 "publish_every_frame": True,
 
                 "enable_preview_stream": True,
                 "preview_port": 8080,
-                "preview_jpeg_quality": 80,
+                "preview_jpeg_quality": 60,
                 "draw_detections": True,
+                "preview_rate_hz": 30.0,
+                "preview_stream_fps": 15.0,
+                "status_rate_hz": 2.0,
             }
         ],
     )
