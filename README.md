@@ -27,7 +27,15 @@ Launch files live in the bringup package, which is used to start one or more nod
 
 ## Packages
 
-This workspace contains the following ROS 2 packages: `leroi_bringup`, `leroi_perception`, `leroi_decision`, `leroi_policy`, `leroi_serial_messenger`, `leroi_telemetry`, and `leroi_interfaces`.
+This workspace contains the following ROS 2 packages:
+
+- `leroi_bringup` — launch package used to start one or more ROS 2 nodes together.
+- `leroi_perception` — perception node package for camera input, preview streaming, and YOLO-based detections.
+- `leroi_decision` — decision-making package that will consume perception outputs and choose actions.
+- `leroi_policy` — policy package for higher-level behavior or control logic that guides decisions.
+- `leroi_serial_messenger` — serial communication package for Jetson ↔ microcontroller messaging.
+- `leroi_telemetry` — telemetry package for publishing or exporting system status and runtime metrics.
+- `leroi_interfaces` — interface package for shared custom messages and services.
 
 Below is a short summary for each package followed by details.
 

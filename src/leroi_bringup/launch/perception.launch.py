@@ -67,10 +67,14 @@ def generate_launch_description():
                 "yolo_model_path": MODEL_PATH,
                 "yolo_confidence": 0.35,
                 "yolo_image_size": 640,
-                "yolo_device": "0",
+                "yolo_device": "cpu",
                 "yolo_use_half": False,
+                "yolo_rate_hz": 15.0,
 
-                "publish_rate_hz": 10.0,
+                "enable_yolo": True,
+                "yolo_model_path": "/home/leroi-ultio/leroiai-jetsonWorkspace/models/yolo/best.pt",
+
+                "publish_rate_hz": 30.0,
                 "publish_every_frame": True,
 
                 "enable_preview_stream": True,
