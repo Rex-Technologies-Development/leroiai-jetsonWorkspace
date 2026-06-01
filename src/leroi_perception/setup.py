@@ -16,7 +16,7 @@ setup(
     maintainer_email="notes.leozhieh@gmail.com",
     description="Perception package for OAK camera and YOLO-based object detection.",
     license="Apache-2.0",
-    tests_require=["pytest"],
+    # tests_require=["pytest"],
     entry_points={
         "console_scripts": [
             "perception_node = leroi_perception.perception_node:main",

@@ -20,7 +20,7 @@ setup(
     maintainer_email="notes.leozhieh@gmail.com",
     description="Bringup package for launching the Leroi AI Jetson ROS 2 stack.",
     license="Apache-2.0",
-    tests_require=["pytest"],
+    # tests_require=["pytest"],
     entry_points={
         "console_scripts": [],
     },
