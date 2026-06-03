@@ -29,7 +29,7 @@ def generate_launch_description():
                 "status_period_sec": 1.0,
 
                 # Keep scan/tx readable, but avoid RX spam unless debugging.
-                "debug_log_rx": False,
+                "debug_log_rx": True,
                 "debug_log_tx": True,
                 "debug_log_scan": True,
 
