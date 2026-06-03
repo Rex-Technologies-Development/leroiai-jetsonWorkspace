@@ -1,5 +1,5 @@
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
 import cv2
 import numpy as np
@@ -75,6 +75,7 @@ class OakDCameraSource(CameraSource):
         height: int = 480,
         fps: int = 30,
         mxid: str = "",
+        with_depth: bool = False,
     ):
         try:
             import depthai as dai
@@ -85,12 +86,13 @@ class OakDCameraSource(CameraSource):
             ) from exc
 
         self.dai = dai
+        self.with_depth = with_depth
+        self._fx = self._fy = self._cx = self._cy = None
 
         pipeline = dai.Pipeline()
 
         cam_rgb = pipeline.create(dai.node.ColorCamera)
 
-        # Newer DepthAI uses CAM_A. Older versions may use RGB.
         if hasattr(dai.CameraBoardSocket, "CAM_A"):
             cam_rgb.setBoardSocket(dai.CameraBoardSocket.CAM_A)
         else:
@@ -106,6 +108,33 @@ class OakDCameraSource(CameraSource):
         xout_rgb.setStreamName("rgb")
         cam_rgb.preview.link(xout_rgb.input)
 
+        if with_depth:
+            mono_left = pipeline.create(dai.node.MonoCamera)
+            mono_right = pipeline.create(dai.node.MonoCamera)
+
+            mono_left.setBoardSocket(dai.CameraBoardSocket.LEFT)
+            mono_right.setBoardSocket(dai.CameraBoardSocket.RIGHT)
+            mono_left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+            mono_right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+            mono_left.setFps(fps)
+            mono_right.setFps(fps)
+
+            stereo = pipeline.create(dai.node.StereoDepth)
+            stereo.setLeftRightCheck(True)
+            stereo.setExtendedDisparity(False)
+            stereo.setSubpixel(False)
+
+            rgb_socket = cam_rgb.getBoardSocket()
+            stereo.setDepthAlign(rgb_socket)
+            stereo.setOutputSize(width, height)
+
+            mono_left.out.link(stereo.left)
+            mono_right.out.link(stereo.right)
+
+            xout_depth = pipeline.create(dai.node.XLinkOut)
+            xout_depth.setStreamName("depth")
+            stereo.depth.link(xout_depth.input)
+
         if mxid:
             self.device = dai.Device(pipeline, mxid)
         else:
@@ -113,11 +142,43 @@ class OakDCameraSource(CameraSource):
 
         self.rgb_queue = self.device.getOutputQueue(
             name="rgb",
-            maxSize=4,
+            maxSize=1,
             blocking=False,
         )
 
+        self.depth_queue = None
+        if with_depth:
+            self.depth_queue = self.device.getOutputQueue(
+                name="depth",
+                maxSize=1,
+                blocking=False,
+            )
+            self._load_intrinsics(width, height)
+
         time.sleep(0.5)
+
+    def _load_intrinsics(self, width: int, height: int) -> None:
+        calib = self.device.readCalibration2()
+        dai = self.dai
+
+        rgb_socket = (
+            dai.CameraBoardSocket.CAM_A
+            if hasattr(dai.CameraBoardSocket, "CAM_A")
+            else dai.CameraBoardSocket.RGB
+        )
+
+        intrinsics = calib.getCameraIntrinsics(rgb_socket, width, height)
+        self._fx = intrinsics[0][0]
+        self._fy = intrinsics[1][1]
+        self._cx = intrinsics[0][2]
+        self._cy = intrinsics[1][2]
+
+    @property
+    def intrinsics(self) -> Optional[Tuple[float, float, float, float]]:
+        """Returns (fx, fy, cx, cy) when with_depth=True, else None."""
+        if self._fx is None:
+            return None
+        return (self._fx, self._fy, self._cx, self._cy)
 
     def read(self) -> Optional[np.ndarray]:
         packet = self.rgb_queue.tryGet()
@@ -126,6 +187,18 @@ class OakDCameraSource(CameraSource):
             return None
 
         return packet.getCvFrame()
+
+    def read_depth(self) -> Optional[np.ndarray]:
+        """Returns the latest stereo depth frame (uint16, mm), or None if unavailable."""
+        if self.depth_queue is None:
+            return None
+
+        packet = self.depth_queue.tryGet()
+
+        if packet is None:
+            return None
+
+        return packet.getFrame()
 
     def close(self) -> None:
         self.device.close()
@@ -138,6 +211,7 @@ def create_camera_source(
     height: int,
     fps: int,
     oak_mxid: str = "",
+    oak_with_depth: bool = False,
 ) -> CameraSource:
     camera_type = camera_type.lower().strip()
 
@@ -147,6 +221,7 @@ def create_camera_source(
             height=height,
             fps=fps,
             mxid=oak_mxid,
+            with_depth=oak_with_depth,
         )
 
     if camera_type == "usb":

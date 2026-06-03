@@ -43,9 +43,8 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
 
-
-# MODEL_PATH = "/home/leroi-ultio/leroiai-jetsonWorkspace/models/yolo/best.pt"
 MODEL_PATH = "/home/leroi-ultio/leroiai-jetsonWorkspace/models/yolo/best_fp16.engine"
+
 
 def generate_launch_description():
     oak_front = Node(
@@ -62,21 +61,19 @@ def generate_launch_description():
                 "camera_height": 480,
                 "camera_fps": 30,
                 "oak_mxid": "",
+                "oak_with_depth": True,
 
                 "enable_yolo": True,
                 "yolo_model_path": MODEL_PATH,
                 "yolo_confidence": 0.35,
                 "yolo_image_size": 320,
-                "yolo_device": "cpu",
+                "yolo_device": "0",
                 "yolo_use_half": False,
                 "yolo_rate_hz": 15.0,
+                "yolo_class_names": '{"0": "blue_block", "1": "blue_block_in_goal", "2": "red_block", "3": "red_block_in_goal"}',
 
-                "enable_yolo": True,
-                # "yolo_model_path": "/home/leroi-ultio/leroiai-jetsonWorkspace/models/yolo/best.pt",
-
-                "publish_rate_hz": 30.0,
-                "publish_every_frame": True,
-
+                "enable_goal_view": True,
+                "goal_view_port": 8082,
                 "enable_preview_stream": True,
                 "preview_port": 8080,
                 "preview_jpeg_quality": 60,
@@ -84,6 +81,9 @@ def generate_launch_description():
                 "preview_rate_hz": 30.0,
                 "preview_stream_fps": 15.0,
                 "status_rate_hz": 2.0,
+
+                "enable_map_stream": True,
+                "map_stream_port": 8081,
             }
         ],
     )
