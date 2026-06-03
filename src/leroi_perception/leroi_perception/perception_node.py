@@ -14,6 +14,8 @@ from leroi_perception.camera_sources import create_camera_source
 from leroi_perception.preview_streamer import MjpegPreviewStreamer
 from leroi_perception.yolo_detector import YoloDetector
 
+import os
+
 try:
     from leroi_interfaces.msg import DetectedObject, DetectionArray
 

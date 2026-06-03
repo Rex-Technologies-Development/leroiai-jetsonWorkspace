@@ -1,9 +1,10 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
+import os
 
-
-YOLO_MODEL_PATH = "/home/leroi-ultio/leroiai-jetsonWorkspace/models/yolo/best_fp16.engine"
-
+YOLO_MODEL_PATH = os.path.expanduser(
+    "~/leroiai-jetsonWorkspace/models/yolo/best_fp16.engine"
+)
 
 def generate_launch_description():
     serial_messenger = Node(

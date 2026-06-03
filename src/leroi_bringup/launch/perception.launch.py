@@ -42,9 +42,11 @@
 
 from launch import LaunchDescription
 from launch_ros.actions import Node
+import os
 
-MODEL_PATH = "/home/leroi-ultio/leroiai-jetsonWorkspace/models/yolo/best_fp16.engine"
-
+YOLO_MODEL_PATH = os.path.expanduser(
+    "~/leroiai-jetsonWorkspace/models/yolo/best_fp16.engine"
+)
 
 def generate_launch_description():
     oak_front = Node(
@@ -64,7 +66,7 @@ def generate_launch_description():
                 "oak_with_depth": True,
 
                 "enable_yolo": True,
-                "yolo_model_path": MODEL_PATH,
+                "yolo_model_path": YOLO_MODEL_PATH,
                 "yolo_confidence": 0.35,
                 "yolo_image_size": 320,
                 "yolo_device": "0",
@@ -72,7 +74,7 @@ def generate_launch_description():
                 "yolo_rate_hz": 15.0,
                 "yolo_class_names": '{"0": "blue_block", "1": "blue_block_in_goal", "2": "red_block", "3": "red_block_in_goal"}',
 
-                "enable_goal_view": True,
+                "enable_goal_view": False,
                 "goal_view_port": 8082,
                 "enable_preview_stream": True,
                 "preview_port": 8080,
