@@ -6,7 +6,7 @@ import threading
 import time
 import zlib
 from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, Optional
 
 import rclpy
 from rclpy.node import Node
@@ -28,7 +28,6 @@ class SerialMessengerNode(Node):
     def __init__(self):
         super().__init__("serial_messenger_node")
 
-        # Serial connection parameters
         self.declare_parameter("serial_port", "")
         self.declare_parameter("baud_rate", 115200)
         self.declare_parameter("read_timeout_sec", 0.05)
@@ -38,22 +37,19 @@ class SerialMessengerNode(Node):
             "VEX V5 User Port,VEX Robotics User Port,VEX Robotics",
         )
 
-        # TX protocol parameters
         self.declare_parameter("tx_append_newline", True)
         self.declare_parameter("max_payload_bytes", 1024)
         self.declare_parameter("drop_tx_when_disconnected", True)
 
-        # Heartbeat/debug parameters
         self.declare_parameter("send_heartbeat", True)
-        self.declare_parameter("heartbeat_period_sec", 1.0)
+        self.declare_parameter("heartbeat_period_sec", 5.0)
         self.declare_parameter("status_period_sec", 1.0)
         self.declare_parameter("debug_log_rx", False)
         self.declare_parameter("debug_log_tx", True)
         self.declare_parameter("debug_log_scan", True)
 
-        # Perception forwarding parameters
         self.declare_parameter("detection_topic", "/perception/oak_front/detections")
-        self.declare_parameter("forward_detections_to_v5", True)
+        self.declare_parameter("forward_detections_to_v5", False)
         self.declare_parameter("debug_log_detections", False)
 
         self.serial_port = str(self.get_parameter("serial_port").value)
@@ -93,10 +89,8 @@ class SerialMessengerNode(Node):
             self.get_parameter("debug_log_detections").value
         )
 
-        # This matches your V5-side serial framing test.
         self.sync_bytes = b"\xaa\x55\xcc\x33"
 
-        # ROS publishers
         self.status_pub = self.create_publisher(
             String,
             "/serial_messenger/status",
@@ -127,7 +121,6 @@ class SerialMessengerNode(Node):
             10,
         )
 
-        # ROS subscribers
         self.tx_sub = self.create_subscription(
             String,
             "/serial_messenger/tx",
@@ -142,13 +135,6 @@ class SerialMessengerNode(Node):
             10,
         )
 
-        self.path_command_sub = self.create_subscription(
-            String,
-            "/robot/path_command",
-            self.path_command_callback,
-            10,
-        )
-
         self.detection_sub = self.create_subscription(
             String,
             self.detection_topic,
@@ -156,7 +142,6 @@ class SerialMessengerNode(Node):
             10,
         )
 
-        # Runtime state
         self.serial_handle: Optional[serial.Serial] = None
         self.serial_lock = threading.Lock()
         self.stop_event = threading.Event()
@@ -187,9 +172,6 @@ class SerialMessengerNode(Node):
             "stamp_ns": 0,
         }
 
-        self.command_id_lock = threading.Lock()
-        self.next_command_id = 1
-
         self.start_time = time.time()
 
         self.io_thread = threading.Thread(
@@ -215,20 +197,11 @@ class SerialMessengerNode(Node):
         self.get_logger().info("Serial messenger node started.")
         self.get_logger().info(f"serial_port: {self.serial_port or 'auto'}")
         self.get_logger().info(f"baud_rate: {self.baud_rate}")
+        self.get_logger().info(f"heartbeat_period_sec: {self.heartbeat_period_sec}")
         self.get_logger().info(f"auto_port_keywords: {self.auto_port_keywords}")
-        self.get_logger().info(
-            f"drop_tx_when_disconnected: {self.drop_tx_when_disconnected}"
-        )
-        self.get_logger().info(f"detection_topic: {self.detection_topic}")
         self.get_logger().info(
             f"forward_detections_to_v5: {self.forward_detections_to_v5}"
         )
-
-    def allocate_command_id(self) -> int:
-        with self.command_id_lock:
-            command_id = self.next_command_id
-            self.next_command_id += 1
-            return command_id
 
     def tx_callback(self, msg: String):
         self.enqueue_payload(
@@ -238,83 +211,72 @@ class SerialMessengerNode(Node):
         )
 
     def robot_command_callback(self, msg: String):
-        """
-        Accepts either a plain string command or a JSON command.
-
-        Plain string:
-          STOP
-
-        JSON:
-          {"type":"CMD","id":1,"command":"STOP"}
-        """
-        text = msg.data.strip()
-
         try:
-            data = json.loads(text)
-            if not isinstance(data, dict):
-                data = {
-                    "type": "CMD",
-                    "id": self.allocate_command_id(),
-                    "command": text,
-                }
-        except json.JSONDecodeError:
-            data = {
-                "type": "CMD",
-                "id": self.allocate_command_id(),
-                "command": text,
-            }
+            command = self.normalize_robot_command(msg.data)
+        except ValueError as exc:
+            self.get_logger().warning(f"Invalid /robot/command: {exc}")
+            return
 
-        if "id" not in data:
-            data["id"] = self.allocate_command_id()
-
-        if "type" not in data:
-            data["type"] = "CMD"
-
-        payload_text = json.dumps(data)
+        payload_text = json.dumps(command)
 
         self.enqueue_payload(
             payload_text=payload_text,
-            payload_type=2,
+            payload_type=5,
             source="/robot/command",
         )
 
         self.get_logger().info(
-            f"Queued robot command id={data.get('id')} type={data.get('type')}"
+            f"Queued ACTION for V5 id={command.get('id')} "
+            f"action_id={command.get('action_id')} "
+            f"action={command.get('action_name')} "
+            f"points={len(command.get('points', []))}"
         )
 
-    def path_command_callback(self, msg: String):
-        """
-        Expected JSON:
+    def normalize_robot_command(self, raw_text: str) -> Dict:
+        text = raw_text.strip()
 
-        {
-          "type": "PATH",
-          "id": 12,
-          "mode": "tank",
-          "points": [
-            {"x": 24.0, "y": 12.0, "heading": 0.0},
-            {"x": 48.0, "y": 24.0, "heading": 45.0}
-          ]
-        }
-        """
+        if not text:
+            raise ValueError("empty command")
+
         try:
-            data = json.loads(msg.data)
-        except json.JSONDecodeError:
-            self.get_logger().warning("Invalid /robot/path_command JSON.")
-            return
+            command = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"not JSON: {exc}") from exc
 
-        if not isinstance(data, dict):
-            self.get_logger().warning("/robot/path_command must be a JSON object.")
-            return
+        if not isinstance(command, dict):
+            raise ValueError("command must be a JSON object")
 
-        if "id" not in data:
-            data["id"] = self.allocate_command_id()
+        command_type = str(command.get("type", "")).upper()
+        if command_type != "ACTION":
+            raise ValueError("command type must be ACTION")
 
-        data["type"] = "PATH"
+        if "id" not in command:
+            raise ValueError("missing id")
 
-        points = data.get("points", [])
-        if not isinstance(points, list) or len(points) == 0:
-            self.get_logger().warning("PATH command has no target points.")
-            return
+        if "action_id" not in command:
+            raise ValueError("missing action_id")
+
+        try:
+            command["id"] = int(command["id"])
+        except (ValueError, TypeError) as exc:
+            raise ValueError("id must be integer") from exc
+
+        try:
+            command["action_id"] = int(command["action_id"])
+        except (ValueError, TypeError) as exc:
+            raise ValueError("action_id must be integer") from exc
+
+        command["type"] = "ACTION"
+
+        if "action_name" not in command:
+            command["action_name"] = f"ACTION_{command['action_id']}"
+
+        points = command.get("points", [])
+        if points is None:
+            points = []
+
+        if not isinstance(points, list):
+            raise ValueError("points must be a list")
 
         normalized_points = []
 
@@ -331,6 +293,13 @@ class SerialMessengerNode(Node):
                 else:
                     raise ValueError("point must be dict or list")
 
+                if not (
+                    math.isfinite(x)
+                    and math.isfinite(y)
+                    and math.isfinite(heading)
+                ):
+                    raise ValueError("point values must be finite")
+
                 normalized_points.append(
                     {
                         "x": x,
@@ -340,24 +309,22 @@ class SerialMessengerNode(Node):
                 )
 
             except (KeyError, ValueError, TypeError, IndexError) as exc:
-                self.get_logger().warning(f"Invalid path point at index {i}: {exc}")
-                return
+                raise ValueError(f"invalid point {i}: {exc}") from exc
 
-        data["points"] = normalized_points
+        command["points"] = normalized_points
 
-        payload_text = json.dumps(data)
+        params = command.get("params", {})
+        if not isinstance(params, dict):
+            raise ValueError("params must be an object")
 
-        self.enqueue_payload(
-            payload_text=payload_text,
-            payload_type=4,
-            source="/robot/path_command",
-        )
+        command["params"] = params
 
-        self.get_logger().info(
-            f"Queued PATH command id={data.get('id')} points={len(normalized_points)}"
-        )
+        return command
 
     def detection_callback(self, msg: String):
+        if not self.forward_detections_to_v5:
+            return
+
         try:
             data = json.loads(msg.data)
         except json.JSONDecodeError:
@@ -388,29 +355,21 @@ class SerialMessengerNode(Node):
             except (ValueError, TypeError):
                 continue
 
-            if self.debug_log_detections:
-                self.get_logger().info(
-                    f"[DETECTION] {name} dist={z_cm:.1f}cm "
-                    f"x={x_cm if x_cm is not None else 0.0:.1f}cm conf={conf:.2f}"
-                )
+            payload = {
+                "type": "DETECTION",
+                "class": name,
+                "z_cm": round(z_cm, 1),
+                "x_cm": round(x_cm, 1) if x_cm is not None else None,
+                "conf": round(conf, 2),
+            }
 
-            if self.forward_detections_to_v5:
-                payload = {
-                    "type": "DETECTION",
-                    "class": name,
-                    "z_cm": round(z_cm, 1),
-                    "x_cm": round(x_cm, 1) if x_cm is not None else None,
-                    "conf": round(conf, 2),
-                }
-
-                self.enqueue_payload(
-                    payload_text=json.dumps(payload),
-                    payload_type=3,
-                    source="detection",
-                )
+            self.enqueue_payload(
+                payload_text=json.dumps(payload),
+                payload_type=3,
+                source="detection",
+            )
 
     def heartbeat_callback(self):
-        # Do not fill the TX queue while disconnected.
         if not self.connected:
             return
 
@@ -620,7 +579,7 @@ class SerialMessengerNode(Node):
                 f"bytes={len(payload_bytes)}, "
                 f"crc={crc}, "
                 f"source={packet.source}, "
-                f"payload={packet.payload_text[:160]}"
+                f"payload={packet.payload_text[:180]}"
             )
 
     def handle_rx_line(self, raw_line: bytes):
@@ -630,7 +589,8 @@ class SerialMessengerNode(Node):
         text = raw_line.decode("utf-8", errors="ignore").strip()
 
         if self.debug_log_rx:
-            self.get_logger().info(f"RX raw: {text}")
+            safe_text = text.encode("unicode_escape", errors="ignore").decode("ascii")
+            self.get_logger().info(f"RX raw escaped: {safe_text}")
 
         raw_msg = String()
         raw_msg.data = json.dumps(
@@ -692,7 +652,6 @@ class SerialMessengerNode(Node):
         )
 
         self.rx_odom_count += 1
-
         stamp_ns = self.get_clock().now().nanoseconds
 
         packet = {
@@ -725,26 +684,46 @@ class SerialMessengerNode(Node):
         self.publish_parsed_message(packet)
 
     def parse_ack(self, parts, raw_text: str):
-        """
-        Expected V5 format:
-          soutV5,ACK,command_id,status,detail
-
-        Examples:
-          soutV5,ACK,12,DONE,path complete
-          soutV5,ACK,12,FAILED,blocked
-        """
         if len(parts) < 4:
             self.rx_parse_error_count += 1
             self.get_logger().warning(f"Invalid ACK format: {raw_text}")
             return
 
-        try:
-            command_id = int(parts[2])
-        except ValueError:
-            command_id = -1
+        command_id = self.safe_int(parts[2], default=-1)
+        status = parts[3].upper().strip()
 
-        status = parts[3]
-        detail = ",".join(parts[4:]) if len(parts) > 4 else ""
+        action_id = None
+        holding_blocks = None
+        detail_parts = []
+
+        remaining = parts[4:]
+
+        if remaining:
+            first = remaining[0].strip()
+
+            try:
+                action_id = int(first)
+                remaining = remaining[1:]
+            except ValueError:
+                action_id = None
+
+        key_values = {}
+
+        for item in remaining:
+            item = item.strip()
+
+            if "=" in item:
+                key, value = item.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+                key_values[key] = value
+            else:
+                detail_parts.append(item)
+
+        if "holding_blocks" in key_values:
+            holding_blocks = self.parse_bool(key_values["holding_blocks"])
+
+        detail = ",".join(detail_parts)
 
         self.rx_ack_count += 1
 
@@ -754,7 +733,10 @@ class SerialMessengerNode(Node):
             "message_type": "ACK",
             "command_id": command_id,
             "status": status,
+            "action_id": action_id,
+            "holding_blocks": holding_blocks,
             "detail": detail,
+            "fields": key_values,
             "raw": raw_text,
         }
 
@@ -765,7 +747,9 @@ class SerialMessengerNode(Node):
         self.publish_parsed_message(packet)
 
         self.get_logger().info(
-            f"Received ACK command_id={command_id} status={status} detail={detail}"
+            f"ACK command_id={command_id} status={status} "
+            f"action_id={action_id} holding_blocks={holding_blocks} "
+            f"detail={detail}"
         )
 
     def publish_parsed_message(self, packet: dict):
@@ -828,6 +812,25 @@ class SerialMessengerNode(Node):
         self.close_serial()
 
         super().destroy_node()
+
+    @staticmethod
+    def safe_int(value, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return default
+
+    @staticmethod
+    def parse_bool(value: str) -> Optional[bool]:
+        text = str(value).strip().lower()
+
+        if text in ("1", "true", "yes", "y", "on"):
+            return True
+
+        if text in ("0", "false", "no", "n", "off"):
+            return False
+
+        return None
 
 
 def main(args=None):

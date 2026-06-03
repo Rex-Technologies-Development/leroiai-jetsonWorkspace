@@ -20,6 +20,7 @@ setup(
     entry_points={
         "console_scripts": [
             "perception_node = leroi_perception.perception_node:main",
+            "route_planner_node = leroi_perception.route_planner_node:main",
         ],
     },
 )

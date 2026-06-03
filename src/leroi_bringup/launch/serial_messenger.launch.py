@@ -1,8 +1,35 @@
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+import os
+
+
+YOLO_MODEL_PATH = os.path.expanduser(
+    "~/leroiai-jetsonWorkspace/models/yolo/best_fp16.engine"
+)
+
+FIELD_MAP_PATH = os.path.expanduser(
+    "~/leroiai-jetsonWorkspace/field_map.png"
+)
 
 
 def generate_launch_description():
+    alliance_color = LaunchConfiguration("alliance_color")
+    field_map_rotation = LaunchConfiguration("field_map_rotation")
+
+    alliance_arg = DeclareLaunchArgument(
+        "alliance_color",
+        default_value="blue",
+        description="Alliance color for route planning: blue or red.",
+    )
+
+    field_map_rotation_arg = DeclareLaunchArgument(
+        "field_map_rotation",
+        default_value="cw",
+        description="Field map rotation: none, cw, ccw, or 180.",
+    )
+
     serial_messenger = Node(
         package="leroi_serial_messenger",
         executable="serial_messenger_node",
@@ -10,27 +37,213 @@ def generate_launch_description():
         output="screen",
         parameters=[
             {
-                # Leave empty for auto-detect.
+                # Leave empty for auto-detect VEX V5 user port.
                 "serial_port": "",
                 "baud_rate": 115200,
                 "read_timeout_sec": 0.05,
                 "reconnect_period_sec": 2.0,
 
+                # Serial TX settings
                 "tx_append_newline": True,
-                "max_payload_bytes": 512,
-
-                "send_heartbeat": True,
-                "heartbeat_period_sec": 1.0,
-                "status_period_sec": 1.0,
-
-                "debug_log_rx": True,
-                "debug_log_tx": True,
-
+                "max_payload_bytes": 1024,
                 "drop_tx_when_disconnected": True,
+
+                # Heartbeat/status
+                "send_heartbeat": True,
+                "heartbeat_period_sec": 5.0,
+                "status_period_sec": 2.0,
+
+                # Debugging
+                "debug_log_rx": False,
+                "debug_log_tx": False,
+                "debug_log_scan": True,
+
+                # Perception detections can be forwarded to V5 later.
+                "detection_topic": "/perception/oak_front/detections",
+                "forward_detections_to_v5": False,
+                "debug_log_detections": False,
             }
         ],
     )
 
-    return LaunchDescription([
-        serial_messenger,
-    ])
+    decision = Node(
+        package="leroi_decision",
+        executable="decision_node",
+        name="decision_node",
+        output="screen",
+        parameters=[
+            {
+                # Input/output topics
+                "action_request_topic": "/decision/action_request",
+                "robot_command_topic": "/robot/command",
+                "action_ack_topic": "/robot/action_ack",
+                "status_topic": "/decision/status",
+                "rejected_topic": "/decision/rejected",
+
+                # Command logging
+                "command_log_topic": "/decision/command_log",
+                "command_log_path": os.path.expanduser(
+                    "~/leroiai-jetsonWorkspace/logs/decision_commands.jsonl"
+                ),
+                "command_history_max": 100,
+
+                # Decision timing
+                "status_rate_hz": 2.0,
+                "command_timeout_sec": 15.0,
+
+                # Safety rules
+                "allow_score_without_blocks": False,
+                "block_new_action_while_waiting": True,
+                "allow_stop_while_waiting": True,
+            }
+        ],
+    )
+
+    perception = Node(
+        package="leroi_perception",
+        executable="perception_node",
+        name="oak_front_perception_node",
+        output="screen",
+        parameters=[
+            {
+                # Camera
+                "camera_name": "oak_front",
+                "camera_type": "oak",
+                "camera_index": 0,
+                "camera_width": 640,
+                "camera_height": 480,
+                "camera_fps": 30,
+                "oak_mxid": "",
+
+                # Needed for projecting YOLO detections onto the field map.
+                # If DepthAI stereo causes issues, temporarily change this to False.
+                "oak_with_depth": True,
+
+                # Preview/status
+                "preview_rate_hz": 30.0,
+                "preview_stream_fps": 15.0,
+                "status_rate_hz": 2.0,
+
+                # YOLO TensorRT
+                "enable_yolo": True,
+                "yolo_rate_hz": 15.0,
+                "yolo_model_path": YOLO_MODEL_PATH,
+                "yolo_confidence": 0.35,
+                "yolo_image_size": 320,
+                "yolo_device": "0",
+                "yolo_use_half": False,
+
+                # Web preview
+                "enable_preview_stream": True,
+                "preview_port": 8080,
+                "preview_jpeg_quality": 60,
+                "draw_detections": True,
+
+                # Map on same 8080 page
+                "enable_map_stream": True,
+                "map_width_px": 700,
+                "map_height_px": 700,
+
+                # VEX field is 12 ft x 12 ft = 365.76 cm.
+                # Coordinate convention:
+                #   (0, 0) = bottom-left of displayed field map
+                #   +X = right
+                #   +Y = up/forward
+                "field_min_x_cm": 0.0,
+                "field_max_x_cm": 365.76,
+                "field_min_y_cm": 0.0,
+                "field_max_y_cm": 365.76,
+
+                # Field map image
+                "field_map_image_path": FIELD_MAP_PATH,
+                "field_map_rotation": field_map_rotation,
+                "field_map_alpha": 0.72,
+                "draw_field_grid": True,
+
+                # Robot/object map history
+                "robot_trail_max_points": 500,
+                "object_history_sec": 3.0,
+
+                # Show route planner suggestion on the preview map.
+                "target_path_topic": "/perception/route_suggestion",
+                "action_ack_topic": "/robot/action_ack",
+
+                # Camera position relative to robot center.
+                # Tune based on actual OAK mounting.
+                "camera_offset_x_cm": 0.0,
+                "camera_offset_y_cm": 15.0,
+                "camera_offset_z_cm": 25.0,
+
+                # Disable goal view for now.
+                "enable_goal_view": False,
+            }
+        ],
+    )
+
+    route_planner = Node(
+        package="leroi_perception",
+        executable="route_planner_node",
+        name="route_planner_node",
+        output="screen",
+        parameters=[
+            {
+                # Alliance selection
+                "alliance_color": alliance_color,
+
+                # Input/output topics
+                "detections_topic": "/perception/oak_front/detections",
+                "odom_topic": "/v5/odom",
+                "route_suggestion_topic": "/perception/route_suggestion",
+                "route_status_topic": "/perception/route_status",
+
+                # Planner rate
+                "route_rate_hz": 3.0,
+                "stale_detection_timeout_sec": 1.0,
+                "stale_odom_timeout_sec": 1.0,
+
+                # Field bounds
+                "field_min_x_cm": 0.0,
+                "field_max_x_cm": 365.76,
+                "field_min_y_cm": 0.0,
+                "field_max_y_cm": 365.76,
+
+                # Route limits
+                "max_route_points": 5,
+                "max_carry_blocks": 5,
+                "already_held_blocks": 0,
+
+                # Filtering/scoring
+                "min_confidence": 0.35,
+                "wall_margin_cm": 45.0,
+                "cluster_dist_cm": 90.0,
+                "cluster_pickup_dist_cm": 38.0,
+                "min_route_value": 0.015,
+
+                # Approximate no-pickup zones around field structures.
+                # Tune these after seeing real projected detections.
+                "skip_near_goals": True,
+                "center_goal_skip_radius_cm": 65.0,
+                "long_goal_y_min_cm": 115.0,
+                "long_goal_y_max_cm": 250.0,
+                "long_goal_x_margin_cm": 75.0,
+                "top_bottom_goal_x_min_cm": 120.0,
+                "top_bottom_goal_x_max_cm": 246.0,
+                "top_bottom_goal_y_margin_cm": 55.0,
+
+                # Debug
+                "publish_empty_route": True,
+                "debug_log_routes": True,
+            }
+        ],
+    )
+
+    return LaunchDescription(
+        [
+            alliance_arg,
+            field_map_rotation_arg,
+            serial_messenger,
+            decision,
+            perception,
+            route_planner,
+        ]
+    )
