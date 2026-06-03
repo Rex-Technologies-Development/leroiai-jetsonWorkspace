@@ -25,12 +25,12 @@ def generate_launch_description():
                 "drop_tx_when_disconnected": True,
 
                 "send_heartbeat": True,
-                "heartbeat_period_sec": 1.0,
-                "status_period_sec": 1.0,
+                "heartbeat_period_sec": 5.0,
+                "status_period_sec": 2.0,
 
                 # Keep scan/tx readable, but avoid RX spam unless debugging.
-                "debug_log_rx": True,
-                "debug_log_tx": True,
+                "debug_log_rx": False,
+                "debug_log_tx": False,
                 "debug_log_scan": True,
 
                 # Perception detections can be forwarded to V5 later.
@@ -57,6 +57,23 @@ def generate_launch_description():
                 "camera_fps": 30,
                 "oak_mxid": "",
                 "oak_with_depth": False,
+
+                "field_map_image_path": os.path.expanduser(
+                    "~/leroiai-jetsonWorkspace/field_map.png"
+                ),
+
+                # Options:
+                # "none" = original image orientation
+                # "cw"   = rotate clockwise, blue parking square near bottom
+                # "ccw"  = rotate counterclockwise, red parking square near bottom
+                "field_map_rotation": "cw",
+
+                # VEX field is 12 ft x 12 ft = 365.76 cm
+                # Using bottom-left field origin.
+                "field_min_x_cm": 0.0,
+                "field_max_x_cm": 365.76,
+                "field_min_y_cm": 0.0,
+                "field_max_y_cm": 365.76,
 
                 # Preview/status
                 "preview_rate_hz": 30.0,

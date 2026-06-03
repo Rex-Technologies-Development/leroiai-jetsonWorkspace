@@ -1,30 +1,24 @@
 from setuptools import find_packages, setup
 
-package_name = 'leroi_decision'
+package_name = "leroi_decision"
 
 setup(
     name=package_name,
-    version='0.0.0',
-    packages=find_packages(exclude=['test']),
+    version="0.0.1",
+    packages=find_packages(exclude=["test"]),
     data_files=[
-        ('share/ament_index/resource_index/packages',
-            ['resource/' + package_name]),
-        ('share/' + package_name, ['package.xml']),
+        ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
+        ("share/" + package_name, ["package.xml"]),
     ],
-    install_requires=['setuptools'],
+    install_requires=["setuptools"],
     zip_safe=True,
-    maintainer='leroi-ultio',
-    maintainer_email='leoxie080808@gmail.com',
-    description='TODO: Package description',
-    license='TODO: License declaration',
-    extras_require={
-        'test': [
-            'pytest',
-        ],
-    },
+    maintainer="Leo Zhieh",
+    maintainer_email="notes.leozhieh@gmail.com",
+    description="Decision layer for Leroi AI robot actions.",
+    license="Apache-2.0",
     entry_points={
-        'console_scripts': [
-            'decision_node = leroi_decision.decision_node:main'
+        "console_scripts": [
+            "decision_node = leroi_decision.decision_node:main",
         ],
     },
 )
