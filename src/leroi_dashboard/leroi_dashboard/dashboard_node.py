@@ -145,6 +145,7 @@ class DashboardNode(Node):
         self.last_detection_debug: dict[str, Any] = {}
         self.blocks_source = "none"
         self.last_mapped_objects_time = 0.0
+        self.last_mapped_objects_count = 0
         self.pose_initialized = False
         self.blocks_initialized = False
 
@@ -165,6 +166,7 @@ class DashboardNode(Node):
         self.connect_fail_count = 0
         self.last_connect_log_sec = 0.0
         self.last_reported_block_count = -1
+        self.last_blocks_skip_log_sec = 0.0
 
         self.create_timer(1.0 / self.sync_rate_hz, self.sync_timer_callback)
         if self.dashboard_active:
@@ -280,9 +282,10 @@ class DashboardNode(Node):
             self.latest_blocks = self.deduplicate_blocks(self.block_history)
             self.blocks_source = "mapped_objects"
             self.last_mapped_objects_time = now
+            self.last_mapped_objects_count = len(packet.get("objects", []))
             self.last_detection_debug = {
                 "source": "mapped_objects",
-                "object_count": len(packet.get("objects", [])),
+                "object_count": self.last_mapped_objects_count,
                 "frame_block_count": len(frame_blocks),
                 "block_count": len(self.latest_blocks),
             }
@@ -354,7 +357,12 @@ class DashboardNode(Node):
         return blocks
 
     def detection_callback(self, msg: String):
-        if time.time() - self.last_mapped_objects_time < self.object_history_sec:
+        # Empty mapped_objects still refreshes the timestamp; only defer to that
+        # path when it is actually publishing objects.
+        if (
+            time.time() - self.last_mapped_objects_time < self.object_history_sec
+            and self.last_mapped_objects_count > 0
+        ):
             return
 
         try:
@@ -578,7 +586,15 @@ class DashboardNode(Node):
             self.latest_bot_holding = bot_holding
 
     def reconnect_timer_callback(self):
-        if not self.dashboard_active or self.connected:
+        if not self.dashboard_active:
+            return
+
+        needs_reconnect = (
+            (self.enable_robot_channel and not self.robot_connected)
+            or (self.enable_blocks_channel and not self.blocks_connected)
+            or (self.enable_camera_channel and not self.camera_connected)
+        )
+        if not needs_reconnect:
             return
         self._connect_dashboard()
 
@@ -604,14 +620,28 @@ class DashboardNode(Node):
             self._current_state_snapshot()
         )
 
-        if not self.dashboard_active or not self.connected:
+        if not self.dashboard_active:
             self.publish_status(pose=pose, blocks=blocks, bot_holding=bot_holding)
             return
+
+        if (
+            self.enable_blocks_channel
+            and not self.blocks_connected
+            and time.time() - self.last_blocks_skip_log_sec
+            >= self.connect_log_interval_sec
+        ):
+            self.last_blocks_skip_log_sec = time.time()
+            self.get_logger().warning(
+                "Blocks channel not connected — not sending /ws/blocks. "
+                f"robot_connected={self.robot_connected} "
+                f"camera_connected={self.camera_connected}"
+            )
 
         try:
             with self.ws_lock:
                 if (
                     self.enable_robot_channel
+                    and self.robot_connected
                     and pose is not None
                     and self.robot_ws is not None
                 ):
@@ -625,7 +655,11 @@ class DashboardNode(Node):
                     with self.state_lock:
                         self.pose_initialized = True
 
-                if self.enable_blocks_channel and self.blocks_ws is not None:
+                if (
+                    self.enable_blocks_channel
+                    and self.blocks_connected
+                    and self.blocks_ws is not None
+                ):
                     blocks_payload = {
                         "type": "patch" if blocks_initialized else "state",
                         "data": {
@@ -637,15 +671,30 @@ class DashboardNode(Node):
                         "WS /ws/blocks send "
                         f"bot_id={self.bot_id} "
                         f"blocks_source={self.blocks_source} "
+                        f"block_count={len(blocks)} "
                         f"{json.dumps(blocks_payload)}"
                     )
-                    send_blocks(
+                    ack = send_blocks(
                         self.blocks_ws,
                         blocks=blocks,
                         bot_holding=bot_holding,
                         patch=blocks_initialized,
                         wait_ack=False,
+                        drain_ack=True,
                     )
+                    if ack is not None:
+                        ack_blocks = ack.get("data", {}).get("blocks", [])
+                        self.get_logger().info(
+                            "WS /ws/blocks ack "
+                            f"bot_id={self.bot_id} "
+                            f"ack_block_count={len(ack_blocks)} "
+                            f"{json.dumps(ack)}"
+                        )
+                        if len(blocks) > 0 and len(ack_blocks) == 0:
+                            self.get_logger().warning(
+                                "Server ack has empty blocks but bot sent "
+                                f"{len(blocks)} — likely a server relay bug"
+                            )
                     with self.state_lock:
                         self.blocks_initialized = True
                     self.blocks_sync_count += 1
@@ -842,6 +891,7 @@ class DashboardNode(Node):
             "block_count": len(blocks),
             "blocks": blocks,
             "blocks_source": self.blocks_source,
+            "last_mapped_objects_count": self.last_mapped_objects_count,
             "detection_debug": self.last_detection_debug,
             "bot_holding": bot_holding,
         }
