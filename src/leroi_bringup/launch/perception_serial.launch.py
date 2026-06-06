@@ -187,6 +187,7 @@ def generate_launch_description():
                 "vexai_host": LaunchConfiguration("vexai_host"),
                 "odom_topic": "/v5/odom",
                 "detection_topic": "/perception/oak_front/detections",
+                "mapped_objects_topic": "/perception/oak_front/mapped_objects",
                 "action_ack_topic": "/robot/action_ack",
                 "status_topic": "/dashboard/status",
                 "sync_rate_hz": 2.0,

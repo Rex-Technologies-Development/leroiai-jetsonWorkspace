@@ -211,10 +211,18 @@ class PerceptionNode(Node):
 
         self.status_topic = f"/perception/{self.camera_name}/status"
         self.detection_topic = f"/perception/{self.camera_name}/detections"
+        self.mapped_objects_topic = (
+            f"/perception/{self.camera_name}/mapped_objects"
+        )
         self.detection_array_topic = f"/perception/{self.camera_name}/detection_array"
 
         self.status_pub = self.create_publisher(String, self.status_topic, 10)
         self.detection_pub = self.create_publisher(String, self.detection_topic, 10)
+        self.mapped_objects_pub = self.create_publisher(
+            String,
+            self.mapped_objects_topic,
+            10,
+        )
 
         if _INTERFACES_AVAILABLE:
             self.detection_array_pub = self.create_publisher(
@@ -383,6 +391,9 @@ class PerceptionNode(Node):
         self.get_logger().info(f"Field map rotation: {self.field_map_rotation}")
         self.get_logger().info(f"Goal view enabled: {self.enable_goal_view}")
         self.get_logger().info(f"Detection topic: {self.detection_topic}")
+        self.get_logger().info(
+            f"Mapped objects topic: {self.mapped_objects_topic}"
+        )
 
     # -------------------------------------------------------------------------
     # Parameter helpers
@@ -697,6 +708,7 @@ class PerceptionNode(Node):
                 self.yolo_count += 1
 
             self.update_object_history(enriched_detections)
+            self.publish_mapped_objects(stamp_now.nanoseconds)
 
             msg = String()
             msg.data = json.dumps(packet)
@@ -796,6 +808,53 @@ class PerceptionNode(Node):
             self.field_min_x_cm <= x_cm <= self.field_max_x_cm
             and self.field_min_y_cm <= y_cm <= self.field_max_y_cm
         )
+
+    def publish_mapped_objects(self, stamp_ns: int):
+        """Publish the same field-mapped objects shown on the preview map."""
+        with self.object_map_lock:
+            objects = list(self.object_history)
+
+        mapped_objects = []
+
+        for obj in objects:
+            class_name = str(obj.get("class_name", "?"))
+            class_key = class_name.lower()
+
+            try:
+                x_field = float(obj["x_field_cm"])
+                y_field = float(obj["y_field_cm"])
+            except (KeyError, TypeError, ValueError):
+                continue
+
+            if not (math.isfinite(x_field) and math.isfinite(y_field)):
+                continue
+
+            color = "unknown"
+            if "blue" in class_key:
+                color = "blue"
+            elif "red" in class_key:
+                color = "red"
+
+            mapped_objects.append(
+                {
+                    "id": f"{class_key}-{round(x_field)}-{round(y_field)}",
+                    "class_name": class_name,
+                    "x_field_cm": round(x_field, 1),
+                    "y_field_cm": round(y_field, 1),
+                    "color": color,
+                    "confidence": obj.get("confidence"),
+                }
+            )
+
+        packet = {
+            "t": stamp_ns,
+            "object_count": len(mapped_objects),
+            "objects": mapped_objects,
+        }
+
+        msg = String()
+        msg.data = json.dumps(packet)
+        self.mapped_objects_pub.publish(msg)
 
     def update_object_history(self, detections: List[Dict[str, Any]]):
         now = time.time()

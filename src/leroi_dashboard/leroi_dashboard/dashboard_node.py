@@ -30,6 +30,10 @@ class DashboardNode(Node):
         self.declare_parameter("vexai_host", "")
         self.declare_parameter("odom_topic", "/v5/odom")
         self.declare_parameter("detection_topic", "/perception/oak_front/detections")
+        self.declare_parameter(
+            "mapped_objects_topic",
+            "/perception/oak_front/mapped_objects",
+        )
         self.declare_parameter("action_ack_topic", "/robot/action_ack")
         self.declare_parameter("status_topic", "/dashboard/status")
         self.declare_parameter("sync_rate_hz", 2.0)
@@ -58,6 +62,9 @@ class DashboardNode(Node):
         self.vexai_host = str(self.get_parameter("vexai_host").value).strip() or None
         self.odom_topic = str(self.get_parameter("odom_topic").value)
         self.detection_topic = str(self.get_parameter("detection_topic").value)
+        self.mapped_objects_topic = str(
+            self.get_parameter("mapped_objects_topic").value
+        )
         self.action_ack_topic = str(self.get_parameter("action_ack_topic").value)
         self.status_topic = str(self.get_parameter("status_topic").value)
         self.sync_rate_hz = float(self.get_parameter("sync_rate_hz").value)
@@ -119,6 +126,12 @@ class DashboardNode(Node):
             String, self.detection_topic, self.detection_callback, 10
         )
         self.create_subscription(
+            String,
+            self.mapped_objects_topic,
+            self.mapped_objects_callback,
+            10,
+        )
+        self.create_subscription(
             String, self.action_ack_topic, self.action_ack_callback, 10
         )
 
@@ -130,6 +143,8 @@ class DashboardNode(Node):
         self.block_history: list[dict[str, Any]] = []
         self.latest_bot_holding: list[str] = []
         self.last_detection_debug: dict[str, Any] = {}
+        self.blocks_source = "none"
+        self.last_mapped_objects_time = 0.0
         self.pose_initialized = False
         self.blocks_initialized = False
 
@@ -185,6 +200,9 @@ class DashboardNode(Node):
 
         self.get_logger().info(f"Odom topic: {self.odom_topic}")
         self.get_logger().info(f"Detection topic: {self.detection_topic}")
+        self.get_logger().info(
+            f"Mapped objects topic: {self.mapped_objects_topic}"
+        )
         self.get_logger().info(f"Action ACK topic: {self.action_ack_topic}")
         self.get_logger().info(
             f"send_all_field_detections={self.send_all_field_detections} "
@@ -235,7 +253,74 @@ class DashboardNode(Node):
         with self.state_lock:
             self.latest_pose = pose
 
+    def mapped_objects_callback(self, msg: String):
+        try:
+            packet = json.loads(msg.data)
+        except json.JSONDecodeError as exc:
+            self.get_logger().warning(f"Invalid mapped objects JSON: {exc}")
+            return
+
+        blocks = self.blocks_from_mapped_objects(packet.get("objects", []))
+
+        with self.state_lock:
+            self.latest_blocks = blocks
+            self.blocks_source = "mapped_objects"
+            self.last_mapped_objects_time = time.time()
+            self.last_detection_debug = {
+                "source": "mapped_objects",
+                "object_count": len(packet.get("objects", [])),
+                "block_count": len(blocks),
+            }
+
+        if len(blocks) != self.last_reported_block_count:
+            self.last_reported_block_count = len(blocks)
+            self.get_logger().info(
+                "Dashboard blocks from mapped_objects: "
+                f"count={len(blocks)}"
+            )
+
+    def blocks_from_mapped_objects(
+        self,
+        objects: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = []
+
+        for obj in objects:
+            x_field_cm = obj.get("x_field_cm", obj.get("x"))
+            y_field_cm = obj.get("y_field_cm", obj.get("y"))
+            if x_field_cm is None or y_field_cm is None:
+                continue
+
+            try:
+                x_field = float(x_field_cm)
+                y_field = float(y_field_cm)
+                x = x_field * self.field_cm_to_dashboard
+                y = y_field * self.field_cm_to_dashboard
+                if not (math.isfinite(x) and math.isfinite(y)):
+                    continue
+            except (TypeError, ValueError):
+                continue
+
+            block_id = str(obj.get("id", "")).strip()
+            if not block_id:
+                class_name = str(obj.get("class_name", "object")).lower()
+                block_id = f"{class_name}-{round(x_field)}-{round(y_field)}"
+
+            blocks.append(
+                {
+                    "id": block_id,
+                    "x": x,
+                    "y": y,
+                    "color": obj.get("color", "unknown"),
+                }
+            )
+
+        return self.deduplicate_blocks(blocks)
+
     def detection_callback(self, msg: String):
+        if time.time() - self.last_mapped_objects_time < self.object_history_sec:
+            return
+
         try:
             packet = json.loads(msg.data)
         except json.JSONDecodeError as exc:
@@ -260,6 +345,7 @@ class DashboardNode(Node):
                 if float(block.get("time", 0.0)) >= cutoff
             ]
             self.latest_blocks = self.deduplicate_blocks(self.block_history)
+            self.blocks_source = "detections"
             self.last_detection_debug = debug
 
         block_count = len(self.latest_blocks)
@@ -702,6 +788,7 @@ class DashboardNode(Node):
             "pose": pose,
             "block_count": len(blocks),
             "blocks": blocks,
+            "blocks_source": self.blocks_source,
             "detection_debug": self.last_detection_debug,
             "bot_holding": bot_holding,
         }
