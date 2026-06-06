@@ -148,6 +148,8 @@ class DecisionNode(Node):
 
         self.next_command_id = 1
 
+        # True after COLLECT_BLOCKS completes; cleared when a score command is sent.
+        self.blocks_collected = False
         self.robot_has_blocks = False
 
         self.waiting_for_ack = False
@@ -200,23 +202,29 @@ class DecisionNode(Node):
             )
             return
 
+        action_id = int(command["action_id"])
+
         out = String()
         out.data = json.dumps(command)
         self.command_pub.publish(out)
 
         self.save_sent_command(command)
 
+        if action_id in SCORE_ACTION_IDS:
+            self.clear_blocks_collected()
+
         self.waiting_for_ack = True
         self.pending_command_id = int(command["id"])
-        self.pending_action_id = int(command["action_id"])
+        self.pending_action_id = action_id
         self.pending_action_name = str(command["action_name"])
         self.pending_sent_time = time.time()
 
         self.get_logger().info(
             f"Approved command id={command['id']} "
-            f"action_id={command['action_id']} "
+            f"action_id={action_id} "
             f"action={command['action_name']} "
-            f"points={len(command.get('points', []))}"
+            f"points={len(command.get('points', []))} "
+            f"blocks_collected={self.blocks_collected}"
         )
 
     def normalize_action_request(self, raw_text: str) -> Dict[str, Any]:
@@ -338,13 +346,24 @@ class DecisionNode(Node):
                 )
 
         if action_id in SCORE_ACTION_IDS:
-            if not self.robot_has_blocks and not self.allow_score_without_blocks:
+            if not self.blocks_collected and not self.allow_score_without_blocks:
                 return (
                     False,
                     "REJECTED_NO_BLOCKS: scoring requires successful COLLECT_BLOCKS first",
                 )
 
         return True, "OK"
+
+    def set_blocks_collected(self, collected: bool):
+        self.blocks_collected = collected
+        self.robot_has_blocks = collected
+
+    def clear_blocks_collected(self):
+        if self.blocks_collected:
+            self.get_logger().info(
+                "blocks_collected cleared: score command sent, collect again"
+            )
+        self.set_blocks_collected(False)
 
     def save_sent_command(self, command: Dict[str, Any]):
         now_unix = time.time()
@@ -389,6 +408,7 @@ class DecisionNode(Node):
             "reason": reason,
             "raw": raw,
             "command": command,
+            "blocks_collected": self.blocks_collected,
             "robot_has_blocks": self.robot_has_blocks,
             "waiting_for_ack": self.waiting_for_ack,
             "pending_command_id": self.pending_command_id,
@@ -433,20 +453,20 @@ class DecisionNode(Node):
 
         if status == "DONE":
             if action_id == COLLECT_BLOCKS_ACTION_ID:
-                self.robot_has_blocks = True
-
-            elif action_id in SCORE_ACTION_IDS:
-                self.robot_has_blocks = False
+                self.set_blocks_collected(True)
+                self.get_logger().info(
+                    "blocks_collected set: collect complete, scoring allowed"
+                )
 
             if holding_blocks is not None:
-                self.robot_has_blocks = bool(holding_blocks)
+                self.set_blocks_collected(bool(holding_blocks))
 
         elif status in ("REJECTED", "FAILED", "CANCELLED", "TIMEOUT"):
             pass
 
         self.get_logger().info(
             f"ACK command_id={command_id} status={status} "
-            f"action_id={action_id} robot_has_blocks={self.robot_has_blocks}"
+            f"action_id={action_id} blocks_collected={self.blocks_collected}"
         )
 
     def status_timer_callback(self):
@@ -469,6 +489,8 @@ class DecisionNode(Node):
 
         packet = {
             "stamp_ns": self.get_clock().now().nanoseconds,
+            "blocks_collected": self.blocks_collected,
+            "needs_collect_blocks": not self.blocks_collected,
             "robot_has_blocks": self.robot_has_blocks,
             "waiting_for_ack": self.waiting_for_ack,
             "pending_command_id": self.pending_command_id,
