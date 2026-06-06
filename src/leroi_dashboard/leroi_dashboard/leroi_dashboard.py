@@ -21,11 +21,15 @@ DEFAULT_HOST = os.environ.get("VEXAI_HOST", "162.248.101.133:6741")
 RECV_TIMEOUT_SEC = 10
 
 
-def _ws_url(path: str, bot_id: str, **extra: str) -> str:
+def resolve_host(host: str | None = None) -> str:
+    return (host or os.environ.get("VEXAI_HOST") or DEFAULT_HOST).strip()
+
+
+def _ws_url(path: str, bot_id: str, host: str | None = None, **extra: str) -> str:
     params = f"role=bot&bot_id={quote(bot_id)}"
     for key, value in extra.items():
         params += f"&{key}={quote(value)}"
-    return f"ws://{DEFAULT_HOST}{path}?{params}"
+    return f"ws://{resolve_host(host)}{path}?{params}"
 
 
 def _connect(url: str, channel: str) -> tuple[ClientConnection, dict[str, Any]]:
@@ -39,24 +43,37 @@ def _connect(url: str, channel: str) -> tuple[ClientConnection, dict[str, Any]]:
     return ws, hello
 
 
-def connect_robot(bot_id: str) -> tuple[ClientConnection, dict[str, Any]]:
+def connect_robot(
+    bot_id: str,
+    host: str | None = None,
+) -> tuple[ClientConnection, dict[str, Any]]:
     """Open /ws/robot. Close the socket when done."""
-    return _connect(_ws_url("/ws/robot", bot_id), "robot")
+    return _connect(_ws_url("/ws/robot", bot_id, host=host), "robot")
 
 
-def connect_blocks(bot_id: str) -> tuple[ClientConnection, dict[str, Any]]:
+def connect_blocks(
+    bot_id: str,
+    host: str | None = None,
+) -> tuple[ClientConnection, dict[str, Any]]:
     """Open /ws/blocks. Close the socket when done."""
-    return _connect(_ws_url("/ws/blocks", bot_id), "blocks")
+    return _connect(_ws_url("/ws/blocks", bot_id, host=host), "blocks")
 
 
 def connect_camera(
     bot_id: str,
     camera_id: str = "cam-1",
     label: str | None = None,
+    host: str | None = None,
 ) -> tuple[ClientConnection, dict[str, Any]]:
     """Open /ws/video for one camera. Close the socket when done."""
     return _connect(
-        _ws_url("/ws/video", bot_id, camera_id=camera_id, label=label or camera_id),
+        _ws_url(
+            "/ws/video",
+            bot_id,
+            host=host,
+            camera_id=camera_id,
+            label=label or camera_id,
+        ),
         f"camera:{camera_id}",
     )
 

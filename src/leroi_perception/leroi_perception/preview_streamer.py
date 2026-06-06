@@ -171,7 +171,11 @@ class MjpegPreviewStreamer:
                     self.wfile.write(index_html)
                     return
 
-                if self.path == "/stream.mjpg":
+                if self.path in ("/stream.mjpg", "/camera.jpg"):
+                    if self.path == "/camera.jpg":
+                        streamer._serve_snapshot(self, "camera")
+                        return
+
                     streamer._serve_mjpeg(self, "camera")
                     return
 
@@ -194,6 +198,27 @@ class MjpegPreviewStreamer:
             daemon=True,
         )
         self._thread.start()
+
+    def get_latest_jpeg(self, channel: str = "camera") -> Optional[bytes]:
+        with self._lock:
+            return self._frames[channel]["jpeg"]
+
+    def _serve_snapshot(self, handler: BaseHTTPRequestHandler, channel: str):
+        frame = self.get_latest_jpeg(channel)
+
+        if frame is None:
+            handler.send_error(503, "No frame available yet")
+            return
+
+        handler.send_response(200)
+        handler.send_header("Content-Type", "image/jpeg")
+        handler.send_header("Content-Length", str(len(frame)))
+        handler.send_header(
+            "Cache-Control",
+            "no-store, no-cache, must-revalidate, max-age=0",
+        )
+        handler.end_headers()
+        handler.wfile.write(frame)
 
     def _serve_mjpeg(self, handler: BaseHTTPRequestHandler, channel: str):
         handler.send_response(200)

@@ -1,21 +1,22 @@
 from launch import LaunchDescription
-from launch_ros.actions import Node
+from launch.actions import IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from ament_index_python.packages import get_package_share_directory
+import os
 
 
 def generate_launch_description():
-    perception_node = Node(
-        package="leroi_perception",
-        executable="perception_node",
-        name="perception_node",
-        output="screen",
-        parameters=[
-            {
-                "publish_rate_hz": 2.0,
-                "enable_fake_detections": True,
-            }
-        ],
+    launch_dir = os.path.join(
+        get_package_share_directory("leroi_bringup"),
+        "launch",
     )
 
-    return LaunchDescription([
-        perception_node,
-    ])
+    return LaunchDescription(
+        [
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(launch_dir, "perception_serial.launch.py"),
+                ),
+            ),
+        ]
+    )
