@@ -216,6 +216,67 @@ ros2 topic echo /perception/status
 ros2 topic echo /perception/detections
 ```
 
+### Decision command testing
+
+`leroi_bringup/launch/integration_test.launch.py` drives the `decision_node` through a
+fixed command sequence so you can verify the action handshake end to end. It brings up
+the serial messenger, perception, the decision node, and a `decision_test_driver` that
+sends commands one at a time, waiting for each ACK before sending the next:
+
+1. `MOVE_CHASSIS_ONLY` (action_id 1) → first target point
+2. `MOVE_CHASSIS_ONLY` (action_id 1) → second target point
+3. `COLLECT_BLOCKS` (action_id 2) → several target points
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch leroi_bringup integration_test.launch.py
+```
+
+The driver waits 5 s after launch before sending the first command. By default it
+expects the **real robot** (via `leroi_serial_messenger`) to return the ACKs on
+`/robot/action_ack`; the sequence only advances when those ACKs arrive.
+
+Launch arguments:
+
+```bash
+# Change the initial delay before command 1 (seconds)
+ros2 launch leroi_bringup integration_test.launch.py startup_delay_sec:=8.0
+
+# Run without a robot: the driver fakes the robot ACKs itself
+ros2 launch leroi_bringup integration_test.launch.py simulate_robot_ack:=true
+```
+
+To edit the command scenario, change the `TEST_SEQUENCE` list at the top of
+`integration_test.launch.py` (action ids 0–22 are mapped in
+`leroi_decision/decision_node.py`).
+
+### Watch decision / robot topics live
+
+```bash
+# Approved commands the decision node forwards to the robot
+ros2 topic echo /robot/command
+
+# Decision node state (waiting_for_ack, pending command, blocks_collected, last ack/rejection)
+ros2 topic echo /decision/status
+
+# ACKs coming back from the robot (or the sim driver)
+ros2 topic echo /robot/action_ack
+
+# Commands being requested into the decision node
+ros2 topic echo /decision/action_request
+
+# Commands the decision node rejected, with the reason (BUSY_WAITING_FOR_ACK, REJECTED_NO_BLOCKS, ...)
+ros2 topic echo /decision/rejected
+
+# Append-only log of every command the decision node sent
+ros2 topic echo /decision/command_log
+
+# Sanity checks
+ros2 topic list | grep -E 'decision|robot'
+ros2 topic hz /decision/status
+```
+
 ## Roadmap / WIP
 
 - Rebuild ONNX model and TensorRT engine at `imgsz=640` (TODO: export ONNX at 640 and rebuild engine for higher accuracy).

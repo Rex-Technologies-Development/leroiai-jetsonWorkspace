@@ -19,6 +19,7 @@ setup(
     entry_points={
         "console_scripts": [
             "decision_node = leroi_decision.decision_node:main",
+            "decision_test_driver = leroi_decision.decision_test_driver:main",
         ],
     },
 )

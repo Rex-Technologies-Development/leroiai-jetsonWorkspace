@@ -210,8 +210,9 @@ class DecisionNode(Node):
 
         self.save_sent_command(command)
 
-        if action_id in SCORE_ACTION_IDS:
-            self.clear_blocks_collected()
+        # Note: blocks_collected is NOT cleared here. The robot is still holding
+        # blocks while it drives to score; we clear it when the score ACK returns
+        # (see action_ack_callback).
 
         self.waiting_for_ack = True
         self.pending_command_id = int(command["id"])
@@ -361,7 +362,7 @@ class DecisionNode(Node):
     def clear_blocks_collected(self):
         if self.blocks_collected:
             self.get_logger().info(
-                "blocks_collected cleared: score command sent, collect again"
+                "blocks_collected cleared: score complete, collect again before scoring"
             )
         self.set_blocks_collected(False)
 
@@ -445,24 +446,30 @@ class DecisionNode(Node):
         self.last_ack = ack
 
         if command_id == self.pending_command_id:
+            completed_action_id = action_id
+
             self.waiting_for_ack = False
             self.pending_command_id = None
             self.pending_action_id = None
             self.pending_action_name = None
             self.pending_sent_time = None
 
-        if status == "DONE":
-            if action_id == COLLECT_BLOCKS_ACTION_ID:
+            # We get no separate success/failure signal from the robot, so an ACK
+            # for the in-flight command means that action is finished.
+            if completed_action_id == COLLECT_BLOCKS_ACTION_ID:
+                # Collect finished -> robot is now holding blocks, scoring allowed.
                 self.set_blocks_collected(True)
                 self.get_logger().info(
                     "blocks_collected set: collect complete, scoring allowed"
                 )
+            elif completed_action_id in SCORE_ACTION_IDS:
+                # Score finished -> robot is now empty, must collect again first.
+                self.clear_blocks_collected()
 
-            if holding_blocks is not None:
-                self.set_blocks_collected(bool(holding_blocks))
-
-        elif status in ("REJECTED", "FAILED", "CANCELLED", "TIMEOUT"):
-            pass
+        # If the robot explicitly reports its hopper state, that is authoritative
+        # and overrides whatever we inferred above.
+        if holding_blocks is not None:
+            self.set_blocks_collected(bool(holding_blocks))
 
         self.get_logger().info(
             f"ACK command_id={command_id} status={status} "
