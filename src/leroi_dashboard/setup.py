@@ -19,7 +19,6 @@ setup(
     entry_points={
         "console_scripts": [
             "dashboard_node = leroi_dashboard.dashboard_node:main",
-            "command_bridge_node = leroi_dashboard.command_bridge_node:main",
         ],
     },
 )

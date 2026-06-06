@@ -19,7 +19,6 @@ from websockets.sync.client import ClientConnection, connect
 
 DEFAULT_HOST = os.environ.get("VEXAI_HOST", "162.248.101.133:6741")
 RECV_TIMEOUT_SEC = 10
-COMMAND_RECV_TIMEOUT_SEC = 30
 
 
 def resolve_host(host: str | None = None) -> str:
@@ -79,58 +78,6 @@ def connect_camera(
     )
 
 
-def command_ws_url(
-    bot_id: str,
-    host: str | None = None,
-    *,
-    source: str | None = None,
-) -> str:
-    """Build /ws/command URL for role=bot (matches mock_command_bot.py)."""
-    extra: dict[str, str] = {}
-    if source:
-        extra["source"] = source
-    return _ws_url("/ws/command", bot_id, host=host, **extra)
-
-
-def connect_command(
-    bot_id: str,
-    host: str | None = None,
-    *,
-    source: str | None = None,
-) -> tuple[ClientConnection, dict[str, Any]]:
-    """Open /ws/command as role=bot.
-
-    Matches mock_command_bot.py handshake:
-      1. recv hello JSON from server (abort if type=error)
-      2. optionally recv one immediate status push
-      3. caller enters recv loop for action_request messages
-
-    Real Jetson bots must NOT pass source=sim (that is dev-only).
-    """
-    url = command_ws_url(bot_id, host=host, source=source)
-    try:
-        ws = connect(url)
-    except ConnectionRefusedError as exc:
-        raise ConnectionError(
-            f"Could not connect command to {url}. Is the server running?"
-        ) from exc
-
-    hello = json.loads(ws.recv(timeout=COMMAND_RECV_TIMEOUT_SEC))
-    if hello.get("type") == "error":
-        message = hello.get("message") or hello.get("reason") or hello
-        raise ConnectionError(f"Command hello error: {message}")
-
-    session: dict[str, Any] = {"hello": hello, "url": url}
-
-    try:
-        initial_status = json.loads(ws.recv(timeout=2.0))
-        session["initial_status"] = initial_status
-    except TimeoutError:
-        pass
-
-    return ws, session
-
-
 def _send_json(ws: ClientConnection, payload: dict[str, Any]) -> dict[str, Any]:
     ws.send(json.dumps(payload))
     return json.loads(ws.recv(timeout=RECV_TIMEOUT_SEC))
@@ -181,8 +128,3 @@ def send_frame(ws: ClientConnection, jpeg: bytes) -> None:
 def send_frame_b64(ws: ClientConnection, jpeg_b64: str) -> None:
     """Push one JPEG frame as JSON base64. No ack from server."""
     ws.send(json.dumps({"type": "frame", "jpeg": jpeg_b64}))
-
-
-def send_command_message(ws: ClientConnection, payload: dict[str, Any]) -> None:
-    """Push one command-channel JSON message. No ack expected from server."""
-    ws.send(json.dumps(payload))

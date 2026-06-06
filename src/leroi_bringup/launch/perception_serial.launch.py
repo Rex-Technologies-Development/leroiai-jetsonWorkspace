@@ -210,28 +210,6 @@ def generate_launch_description():
         ],
     )
 
-    command_bridge = Node(
-        package="leroi_dashboard",
-        executable="command_bridge_node",
-        name="command_bridge_node",
-        output="screen",
-        parameters=[
-            {
-                "enable_command_bridge": LaunchConfiguration("enable_dashboard"),
-                "bot_id": LaunchConfiguration("dashboard_bot_id"),
-                "vexai_host": LaunchConfiguration("vexai_host"),
-                "action_request_topic": "/decision/action_request",
-                "action_ack_topic": "/robot/action_ack",
-                "rejected_topic": "/decision/rejected",
-                "command_log_topic": "/decision/command_log",
-                "decision_status_topic": "/decision/status",
-                "status_topic": "/command_bridge/status",
-                "status_rate_hz": 2.0,
-                "reconnect_period_sec": 5.0,
-            }
-        ],
-    )
-
     return LaunchDescription(
         [
             DeclareLaunchArgument(
@@ -253,6 +231,5 @@ def generate_launch_description():
             decision,
             perception,
             dashboard,
-            command_bridge,
         ]
     )
