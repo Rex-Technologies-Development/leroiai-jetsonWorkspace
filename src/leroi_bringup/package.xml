@@ -13,6 +13,10 @@
   <depend>launch</depend>
   <depend>launch_ros</depend>
   <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>leroi_dashboard</exec_depend>
+  <exec_depend>leroi_decision</exec_depend>
+  <exec_depend>leroi_perception</exec_depend>
+  <exec_depend>leroi_serial_messenger</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

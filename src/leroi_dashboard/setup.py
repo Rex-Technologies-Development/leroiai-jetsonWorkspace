@@ -14,7 +14,7 @@ setup(
     zip_safe=True,
     maintainer="Leo Zhieh",
     maintainer_email="notes.leozhieh@gmail.com",
-    description="Dashboard connection for the robot.",
+    description="Dashboard layer for Leroi AI robot actions.",
     license="Apache-2.0",
     entry_points={
         "console_scripts": [

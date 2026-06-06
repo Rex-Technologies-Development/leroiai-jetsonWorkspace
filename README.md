@@ -34,6 +34,7 @@ This workspace contains the following ROS 2 packages:
 - `leroi_decision` — decision-making package that will consume perception outputs and choose actions.
 - `leroi_policy` — policy package for higher-level behavior or control logic that guides decisions.
 - `leroi_serial_messenger` — serial communication package for Jetson ↔ microcontroller messaging.
+- `leroi_dashboard` — VexAI dashboard sync for robot pose, blocks, and camera stream.
 - `leroi_telemetry` — telemetry package for publishing or exporting system status and runtime metrics.
 - `leroi_interfaces` — interface package for shared custom messages and services.
 
@@ -112,6 +113,15 @@ Serial comms node scaffold (intended for Jetson ↔ microcontroller messaging).
 - Node entrypoint: `serial_messenger_node` (currently prints a hello message)
 - Supporting code: `leroi_serial_messenger/serial_messenger_node.py`
 
+### `leroi_dashboard` (ament_python)
+
+VexAI dashboard sync node. Publishes robot pose, field blocks, and a camera JPEG stream to the remote dashboard over WebSocket when enabled.
+
+- Node entrypoint: `dashboard_node` (`ros2 run leroi_dashboard dashboard_node`)
+- Supporting code: `leroi_dashboard/dashboard_node.py`, `leroi_dashboard/leroi_dashboard.py`
+- Requires: `python3-websockets` (or `pip install websockets`)
+- Launched by: `leroi_bringup/launch/perception_serial.launch.py`, `leroi_bringup/launch/dashboard.launch.py`
+
 ### `leroi_telemetry` (ament_python)
 
 Telemetry node scaffold.
@@ -129,8 +139,11 @@ Note: At the moment this package contains only the CMake/package scaffolding (no
 
 - ROS 2 Humble (this workspace has been built against `/opt/ros/humble`)
 - `colcon` + standard ROS 2 build tools
+- `python3-websockets` for `leroi_dashboard` (`sudo apt install python3-websockets`)
 
 On a machine with ROS 2 installed, you should have access to `colcon` and `ros2` on your PATH after sourcing the ROS setup script.
+
+**Important:** ROS packages must live under `src/` only. Do not copy a package folder (e.g. `leroi_dashboard/`) into the workspace root — `colcon` will fail with "Duplicate package names not supported".
 
 ## Device permissions
 
