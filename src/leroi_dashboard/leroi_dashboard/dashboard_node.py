@@ -291,8 +291,11 @@ class DashboardNode(Node):
         if block_count != self.last_reported_block_count:
             self.last_reported_block_count = block_count
             self.get_logger().info(
-                "Dashboard blocks from mapped_objects: "
-                f"history={block_count} frame={len(frame_blocks)}"
+                "Mapped objects received: "
+                f"objects_in_msg={len(packet.get('objects', []))} "
+                f"frame_blocks={len(frame_blocks)} "
+                f"history_blocks={block_count} "
+                f"sample={json.dumps(packet.get('objects', [])[:2])}"
             )
 
     def blocks_from_mapped_objects(
@@ -616,6 +619,19 @@ class DashboardNode(Node):
                         self.pose_initialized = True
 
                 if self.enable_blocks_channel and self.blocks_ws is not None:
+                    blocks_payload = {
+                        "type": "patch" if blocks_initialized else "state",
+                        "data": {
+                            "blocks": blocks,
+                            "bot_holding": bot_holding,
+                        },
+                    }
+                    self.get_logger().info(
+                        "WS /ws/blocks send "
+                        f"bot_id={self.bot_id} "
+                        f"blocks_source={self.blocks_source} "
+                        f"{json.dumps(blocks_payload)}"
+                    )
                     send_blocks(
                         self.blocks_ws,
                         blocks=blocks,
@@ -626,12 +642,7 @@ class DashboardNode(Node):
                     with self.state_lock:
                         self.blocks_initialized = True
                     self.blocks_sync_count += 1
-                    if len(blocks) != self.last_blocks_sent_count:
-                        self.last_blocks_sent_count = len(blocks)
-                        self.get_logger().info(
-                            "Sent blocks to dashboard websocket: "
-                            f"count={len(blocks)}"
-                        )
+                    self.last_blocks_sent_count = len(blocks)
 
             self.sync_count += 1
             self.last_error = ""
