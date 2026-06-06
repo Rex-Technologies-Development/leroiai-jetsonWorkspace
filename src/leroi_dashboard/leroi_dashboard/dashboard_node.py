@@ -1,6 +1,7 @@
 import json
 import math
 import threading
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Optional
@@ -37,6 +38,10 @@ class DashboardNode(Node):
         self.declare_parameter("field_cm_to_dashboard", 1.0)
         self.declare_parameter("send_all_field_detections", True)
         self.declare_parameter("block_class_substrings", ["block", "red", "blue"])
+        self.declare_parameter("object_history_sec", 3.0)
+        self.declare_parameter("camera_offset_x_cm", 0.0)
+        self.declare_parameter("camera_offset_y_cm", 15.0)
+        self.declare_parameter("camera_offset_z_cm", 25.0)
         self.declare_parameter("enable_robot_channel", True)
         self.declare_parameter("enable_blocks_channel", True)
         self.declare_parameter("enable_camera_channel", True)
@@ -70,6 +75,18 @@ class DashboardNode(Node):
         )
         self.block_class_substrings = list(
             self.get_parameter("block_class_substrings").value
+        )
+        self.object_history_sec = float(
+            self.get_parameter("object_history_sec").value
+        )
+        self.camera_offset_x_cm = float(
+            self.get_parameter("camera_offset_x_cm").value
+        )
+        self.camera_offset_y_cm = float(
+            self.get_parameter("camera_offset_y_cm").value
+        )
+        self.camera_offset_z_cm = float(
+            self.get_parameter("camera_offset_z_cm").value
         )
         self.enable_robot_channel = bool(
             self.get_parameter("enable_robot_channel").value
@@ -110,7 +127,9 @@ class DashboardNode(Node):
 
         self.latest_pose: Optional[dict[str, float]] = None
         self.latest_blocks: list[dict[str, Any]] = []
+        self.block_history: list[dict[str, Any]] = []
         self.latest_bot_holding: list[str] = []
+        self.last_detection_debug: dict[str, Any] = {}
         self.pose_initialized = False
         self.blocks_initialized = False
 
@@ -223,23 +242,108 @@ class DashboardNode(Node):
             self.get_logger().warning(f"Invalid detection JSON: {exc}")
             return
 
-        blocks = self.build_dashboard_blocks(packet.get("detections", []))
+        robot_pose = self.extract_robot_pose(packet)
+        frame_blocks, debug = self.build_dashboard_blocks(
+            packet.get("detections", []),
+            robot_pose=robot_pose,
+        )
+        now = time.time()
 
         with self.state_lock:
-            self.latest_blocks = blocks
+            for block in frame_blocks:
+                self.block_history.append({**block, "time": now})
 
-        if len(blocks) != self.last_reported_block_count:
-            self.last_reported_block_count = len(blocks)
+            cutoff = now - self.object_history_sec
+            self.block_history = [
+                block
+                for block in self.block_history
+                if float(block.get("time", 0.0)) >= cutoff
+            ]
+            self.latest_blocks = self.deduplicate_blocks(self.block_history)
+            self.last_detection_debug = debug
+
+        block_count = len(self.latest_blocks)
+        if block_count != self.last_reported_block_count:
+            self.last_reported_block_count = block_count
             self.get_logger().info(
-                f"Dashboard mapped blocks updated: count={len(blocks)}"
+                "Dashboard mapped blocks updated: "
+                f"history={block_count} frame={len(frame_blocks)} "
+                f"detections={debug.get('detection_count', 0)} "
+                f"with_field={debug.get('with_field_count', 0)} "
+                f"projected={debug.get('projected_count', 0)} "
+                f"skipped={debug.get('skipped_count', 0)}"
             )
+
+    def extract_robot_pose(
+        self,
+        packet: dict[str, Any],
+    ) -> Optional[dict[str, float]]:
+        if not bool(packet.get("robot_pose_valid", True)):
+            return None
+
+        try:
+            return {
+                "x": float(packet.get("robot_x", 0.0)),
+                "y": float(packet.get("robot_y", 0.0)),
+                "heading_deg": float(packet.get("robot_heading_deg", 0.0)),
+            }
+        except (TypeError, ValueError):
+            return None
+
+    def project_detection_to_field(
+        self,
+        detection: dict[str, Any],
+        robot_pose: dict[str, float],
+    ) -> Optional[tuple[float, float]]:
+        x_cm = detection.get("x_cm")
+        z_cm = detection.get("z_cm")
+        if x_cm is None or z_cm is None:
+            return None
+
+        try:
+            x_cam = float(x_cm)
+            z_cam = float(z_cm)
+            if not (math.isfinite(x_cam) and math.isfinite(z_cam)):
+                return None
+        except (TypeError, ValueError):
+            return None
+
+        local_right_cm = self.camera_offset_x_cm + x_cam
+        local_forward_cm = self.camera_offset_y_cm + z_cam
+        heading_rad = math.radians(robot_pose["heading_deg"])
+
+        forward_x = math.sin(heading_rad)
+        forward_y = math.cos(heading_rad)
+        right_x = math.cos(heading_rad)
+        right_y = -math.sin(heading_rad)
+
+        x_field = (
+            robot_pose["x"]
+            + local_forward_cm * forward_x
+            + local_right_cm * right_x
+        )
+        y_field = (
+            robot_pose["y"]
+            + local_forward_cm * forward_y
+            + local_right_cm * right_y
+        )
+
+        if not (math.isfinite(x_field) and math.isfinite(y_field)):
+            return None
+
+        return x_field, y_field
 
     def build_dashboard_blocks(
         self,
         detections: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        """Build block payloads from perception detections with field coordinates."""
-        blocks = []
+        *,
+        robot_pose: Optional[dict[str, float]] = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Build block payloads from detections, matching perception map behavior."""
+        blocks: list[dict[str, Any]] = []
+        projected_count = 0
+        with_field_count = 0
+        skipped_count = 0
 
         for detection in detections:
             class_name = str(
@@ -249,12 +353,29 @@ class DashboardNode(Node):
             if not self.send_all_field_detections and not any(
                 token in class_name for token in self.block_class_substrings
             ):
+                skipped_count += 1
                 continue
 
             x_field_cm = detection.get("x_field_cm")
             y_field_cm = detection.get("y_field_cm")
+
             if x_field_cm is None or y_field_cm is None:
-                continue
+                if robot_pose is not None:
+                    projected = self.project_detection_to_field(
+                        detection,
+                        robot_pose,
+                    )
+                    if projected is not None:
+                        x_field_cm, y_field_cm = projected
+                        projected_count += 1
+                    else:
+                        skipped_count += 1
+                        continue
+                else:
+                    skipped_count += 1
+                    continue
+            else:
+                with_field_count += 1
 
             try:
                 x_field = float(x_field_cm)
@@ -262,8 +383,10 @@ class DashboardNode(Node):
                 x = x_field * self.field_cm_to_dashboard
                 y = y_field * self.field_cm_to_dashboard
                 if not (math.isfinite(x) and math.isfinite(y)):
+                    skipped_count += 1
                     continue
             except (TypeError, ValueError):
+                skipped_count += 1
                 continue
 
             color = "unknown"
@@ -284,7 +407,38 @@ class DashboardNode(Node):
                 }
             )
 
-        return blocks
+        debug = {
+            "detection_count": len(detections),
+            "with_field_count": with_field_count,
+            "projected_count": projected_count,
+            "skipped_count": skipped_count,
+            "frame_block_count": len(blocks),
+            "robot_pose_available": robot_pose is not None,
+        }
+        return blocks, debug
+
+    @staticmethod
+    def deduplicate_blocks(
+        blocks: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        deduped: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        for block in blocks:
+            block_id = str(block.get("id", ""))
+            if not block_id or block_id in seen:
+                continue
+            seen.add(block_id)
+            deduped.append(
+                {
+                    "id": block["id"],
+                    "x": block["x"],
+                    "y": block["y"],
+                    "color": block.get("color", "unknown"),
+                }
+            )
+
+        return deduped
 
     def action_ack_callback(self, msg: String):
         try:
@@ -548,6 +702,7 @@ class DashboardNode(Node):
             "pose": pose,
             "block_count": len(blocks),
             "blocks": blocks,
+            "detection_debug": self.last_detection_debug,
             "bot_holding": bot_holding,
         }
 
