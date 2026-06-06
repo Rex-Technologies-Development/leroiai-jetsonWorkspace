@@ -829,19 +829,13 @@ class PerceptionNode(Node):
             if not (math.isfinite(x_field) and math.isfinite(y_field)):
                 continue
 
-            color = "unknown"
-            if "blue" in class_key:
-                color = "blue"
-            elif "red" in class_key:
-                color = "red"
-
             mapped_objects.append(
                 {
                     "id": f"{class_key}-{round(x_field)}-{round(y_field)}",
                     "class_name": class_name,
                     "x_field_cm": round(x_field, 1),
                     "y_field_cm": round(y_field, 1),
-                    "color": color,
+                    "color": class_key.replace("_", " "),
                     "confidence": obj.get("confidence"),
                 }
             )

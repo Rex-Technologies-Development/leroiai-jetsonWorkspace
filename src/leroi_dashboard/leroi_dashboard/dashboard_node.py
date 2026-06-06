@@ -325,14 +325,20 @@ class DashboardNode(Node):
                 class_name = str(obj.get("class_name", "object")).lower()
                 block_id = f"{class_name}-{round(x_field)}-{round(y_field)}"
 
+            class_name = obj.get("class_name")
+            color = (
+                self.block_color_label(class_name)
+                if class_name is not None
+                else obj.get("color", "unknown")
+            )
+
             entry: dict[str, Any] = {
                 "id": block_id,
                 "x": x,
                 "y": y,
-                "color": obj.get("color", "unknown"),
+                "color": color,
             }
 
-            class_name = obj.get("class_name")
             if class_name is not None:
                 entry["class_name"] = class_name
 
@@ -505,12 +511,6 @@ class DashboardNode(Node):
                 skipped_count += 1
                 continue
 
-            color = "unknown"
-            if "blue" in class_name:
-                color = "blue"
-            elif "red" in class_name:
-                color = "red"
-
             blocks.append(
                 {
                     "id": (
@@ -519,7 +519,8 @@ class DashboardNode(Node):
                     ),
                     "x": x,
                     "y": y,
-                    "color": color,
+                    "color": self.block_color_label(class_name),
+                    "class_name": class_name,
                 }
             )
 
@@ -532,6 +533,12 @@ class DashboardNode(Node):
             "robot_pose_available": robot_pose is not None,
         }
         return blocks, debug
+
+    @staticmethod
+    def block_color_label(class_name: str) -> str:
+        """Human-readable block type for the dashboard color field."""
+        label = str(class_name).strip().lower().replace("_", " ")
+        return label if label else "unknown"
 
     @staticmethod
     def deduplicate_blocks(
