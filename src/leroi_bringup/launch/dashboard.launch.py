@@ -39,6 +39,8 @@ def generate_launch_description():
                         "sync_rate_hz": 2.0,
                         "reconnect_period_sec": 5.0,
                         "field_cm_to_dashboard": 1.0,
+                        "send_all_field_detections": True,
+                        "block_class_substrings": ["block", "red", "blue"],
                         "enable_robot_channel": True,
                         "enable_blocks_channel": True,
                         "enable_camera_channel": True,

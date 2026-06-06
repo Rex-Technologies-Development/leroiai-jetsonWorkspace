@@ -1,4 +1,5 @@
 import json
+import math
 import threading
 import urllib.error
 import urllib.request
@@ -34,7 +35,8 @@ class DashboardNode(Node):
         self.declare_parameter("reconnect_period_sec", 5.0)
         self.declare_parameter("connect_log_interval_sec", 60.0)
         self.declare_parameter("field_cm_to_dashboard", 1.0)
-        self.declare_parameter("block_class_substrings", ["block"])
+        self.declare_parameter("send_all_field_detections", True)
+        self.declare_parameter("block_class_substrings", ["block", "red", "blue"])
         self.declare_parameter("enable_robot_channel", True)
         self.declare_parameter("enable_blocks_channel", True)
         self.declare_parameter("enable_camera_channel", True)
@@ -62,6 +64,9 @@ class DashboardNode(Node):
         )
         self.field_cm_to_dashboard = float(
             self.get_parameter("field_cm_to_dashboard").value
+        )
+        self.send_all_field_detections = bool(
+            self.get_parameter("send_all_field_detections").value
         )
         self.block_class_substrings = list(
             self.get_parameter("block_class_substrings").value
@@ -123,6 +128,7 @@ class DashboardNode(Node):
         self.last_error = ""
         self.connect_fail_count = 0
         self.last_connect_log_sec = 0.0
+        self.last_reported_block_count = -1
 
         self.create_timer(1.0 / self.sync_rate_hz, self.sync_timer_callback)
         if self.dashboard_active:
@@ -161,6 +167,10 @@ class DashboardNode(Node):
         self.get_logger().info(f"Odom topic: {self.odom_topic}")
         self.get_logger().info(f"Detection topic: {self.detection_topic}")
         self.get_logger().info(f"Action ACK topic: {self.action_ack_topic}")
+        self.get_logger().info(
+            f"send_all_field_detections={self.send_all_field_detections} "
+            f"block_class_substrings={self.block_class_substrings}"
+        )
 
     @staticmethod
     def _parse_bool(value: Any, default: bool = False) -> bool:
@@ -213,18 +223,47 @@ class DashboardNode(Node):
             self.get_logger().warning(f"Invalid detection JSON: {exc}")
             return
 
+        blocks = self.build_dashboard_blocks(packet.get("detections", []))
+
+        with self.state_lock:
+            self.latest_blocks = blocks
+
+        if len(blocks) != self.last_reported_block_count:
+            self.last_reported_block_count = len(blocks)
+            self.get_logger().info(
+                f"Dashboard mapped blocks updated: count={len(blocks)}"
+            )
+
+    def build_dashboard_blocks(
+        self,
+        detections: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Build block payloads from perception detections with field coordinates."""
         blocks = []
-        for index, detection in enumerate(packet.get("detections", [])):
+
+        for detection in detections:
             class_name = str(
                 detection.get("class_name", detection.get("class", ""))
             ).lower()
 
-            if not any(token in class_name for token in self.block_class_substrings):
+            if not self.send_all_field_detections and not any(
+                token in class_name for token in self.block_class_substrings
+            ):
                 continue
 
             x_field_cm = detection.get("x_field_cm")
             y_field_cm = detection.get("y_field_cm")
             if x_field_cm is None or y_field_cm is None:
+                continue
+
+            try:
+                x_field = float(x_field_cm)
+                y_field = float(y_field_cm)
+                x = x_field * self.field_cm_to_dashboard
+                y = y_field * self.field_cm_to_dashboard
+                if not (math.isfinite(x) and math.isfinite(y)):
+                    continue
+            except (TypeError, ValueError):
                 continue
 
             color = "unknown"
@@ -235,15 +274,17 @@ class DashboardNode(Node):
 
             blocks.append(
                 {
-                    "id": f"block-{index}",
-                    "x": float(x_field_cm) * self.field_cm_to_dashboard,
-                    "y": float(y_field_cm) * self.field_cm_to_dashboard,
+                    "id": (
+                        f"{class_name}-{round(x_field)}-"
+                        f"{round(y_field)}"
+                    ),
+                    "x": x,
+                    "y": y,
                     "color": color,
                 }
             )
 
-        with self.state_lock:
-            self.latest_blocks = blocks
+        return blocks
 
     def action_ack_callback(self, msg: String):
         try:
@@ -506,6 +547,7 @@ class DashboardNode(Node):
             "last_error": self.last_error,
             "pose": pose,
             "block_count": len(blocks),
+            "blocks": blocks,
             "bot_holding": bot_holding,
         }
 
