@@ -8,6 +8,7 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 from leroi_dashboard.leroi_dashboard import (
+    command_ws_url,
     connect_command,
     resolve_host,
     send_command_message,
@@ -57,6 +58,7 @@ class CommandBridgeNode(Node):
         self.declare_parameter("connect_log_interval_sec", 60.0)
         self.declare_parameter("ws_recv_timeout_sec", 30.0)
         self.declare_parameter("push_command_status", False)
+        self.declare_parameter("command_source", "")
 
         self.enable_command_bridge = self._parse_bool(
             self.get_parameter("enable_command_bridge").value,
@@ -87,6 +89,7 @@ class CommandBridgeNode(Node):
         self.push_command_status = bool(
             self.get_parameter("push_command_status").value
         )
+        self.command_source = str(self.get_parameter("command_source").value).strip()
 
         if self.status_rate_hz <= 0.0:
             raise ValueError("status_rate_hz must be greater than 0")
@@ -155,10 +158,17 @@ class CommandBridgeNode(Node):
         if self.bridge_active:
             self.get_logger().info(f"Command host: {self.dashboard_host}")
             self.get_logger().info(f"Command bot_id={self.bot_id}")
-            self.get_logger().info(
-                "Command channel: ws://"
-                f"{self.dashboard_host}/ws/command?role=bot&bot_id={self.bot_id}"
+            command_url = command_ws_url(
+                self.bot_id,
+                host=self.vexai_host,
+                source=self.command_source or None,
             )
+            self.get_logger().info(f"Command channel: {command_url}")
+            if self.command_source == "sim":
+                self.get_logger().warning(
+                    "command_source=sim is for dev mock bots only; "
+                    "real Jetson should leave command_source empty."
+                )
         self.get_logger().info(
             f"Action request topic: {self.action_request_topic}"
         )
@@ -257,21 +267,10 @@ class CommandBridgeNode(Node):
             pending["command_id"] = command_id
             self.request_id_by_command_id[command_id] = request_id
 
-        self._send_ws(
-            {
-                "type": "action_ack",
-                "request_id": request_id,
-                "status": "QUEUED",
-                "command_id": command_id,
-                "action_id": action_id,
-                "action_name": action_name,
-                "message": "Approved by decision layer",
-            }
-        )
-
         self.get_logger().info(
-            f"Forwarded action request_id={request_id} "
-            f"command_id={command_id} action_id={action_id}"
+            f"Decision approved request_id={request_id} "
+            f"command_id={command_id} action_id={action_id} "
+            f"action={action_name}"
         )
 
     def rejected_callback(self, msg: String):
@@ -396,13 +395,30 @@ class CommandBridgeNode(Node):
             )
             return
 
-        ros_payload = self.build_ros_action_request(packet, request_id, action_id)
+        action_name = ACTION_NAMES.get(action_id, f"ACTION_{action_id}")
+        server_command_id = packet.get("command_id")
 
         with self.state_lock:
             self.pending_by_request_id[request_id] = {
                 "action_id": action_id,
-                "command_id": packet.get("command_id"),
+                "command_id": server_command_id,
             }
+            if server_command_id is not None:
+                self.request_id_by_command_id[int(server_command_id)] = request_id
+
+        self._send_ws(
+            {
+                "type": "action_ack",
+                "request_id": request_id,
+                "status": "QUEUED",
+                "command_id": server_command_id,
+                "action_id": action_id,
+                "action_name": action_name,
+                "message": "Received by robot",
+            }
+        )
+
+        ros_payload = self.build_ros_action_request(packet, request_id, action_id)
 
         out = String()
         out.data = json.dumps(ros_payload)
@@ -410,7 +426,8 @@ class CommandBridgeNode(Node):
         self.forwarded_count += 1
 
         self.get_logger().info(
-            f"Received WS action request_id={request_id} action_id={action_id}"
+            f"Received WS action request_id={request_id} "
+            f"action_id={action_id} action={action_name}"
         )
 
     def build_ros_action_request(
@@ -487,6 +504,7 @@ class CommandBridgeNode(Node):
                 self.command_ws, session = connect_command(
                     self.bot_id,
                     host=self.vexai_host,
+                    source=self.command_source or None,
                 )
                 self.command_connected = True
                 self.last_error = ""
@@ -497,14 +515,11 @@ class CommandBridgeNode(Node):
             initial_status = session.get("initial_status")
             hello_type = hello.get("type", "ok")
             self.get_logger().info(
-                "Connected command channel to VexAI dashboard "
-                f"(hello={hello_type})"
+                f"Connected command channel ({session.get('url', '')}) "
+                f"hello={hello_type}"
             )
             if initial_status is not None:
-                self.get_logger().info(
-                    "Command channel initial status: "
-                    f"{initial_status.get('type', initial_status)}"
-                )
+                self.get_logger().info(f"Command status push: {initial_status}")
         except Exception as exc:
             self.command_connected = False
             self.last_error = str(exc)
@@ -552,6 +567,7 @@ class CommandBridgeNode(Node):
                 continue
 
             self.received_count += 1
+            self.get_logger().info(f"Command WS ← {packet}")
             self.incoming_queue.put(packet)
 
         self.command_connected = False

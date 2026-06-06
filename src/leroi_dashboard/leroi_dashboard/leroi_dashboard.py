@@ -79,18 +79,35 @@ def connect_camera(
     )
 
 
+def command_ws_url(
+    bot_id: str,
+    host: str | None = None,
+    *,
+    source: str | None = None,
+) -> str:
+    """Build /ws/command URL for role=bot (matches mock_command_bot.py)."""
+    extra: dict[str, str] = {}
+    if source:
+        extra["source"] = source
+    return _ws_url("/ws/command", bot_id, host=host, **extra)
+
+
 def connect_command(
     bot_id: str,
     host: str | None = None,
+    *,
+    source: str | None = None,
 ) -> tuple[ClientConnection, dict[str, Any]]:
     """Open /ws/command as role=bot.
 
-    Matches the dashboard mock bot handshake:
-      1. recv hello JSON from server
-      2. optionally recv one immediate status push (if server sends it)
-      3. then enter recv loop for action_request messages
+    Matches mock_command_bot.py handshake:
+      1. recv hello JSON from server (abort if type=error)
+      2. optionally recv one immediate status push
+      3. caller enters recv loop for action_request messages
+
+    Real Jetson bots must NOT pass source=sim (that is dev-only).
     """
-    url = _ws_url("/ws/command", bot_id, host=host)
+    url = command_ws_url(bot_id, host=host, source=source)
     try:
         ws = connect(url)
     except ConnectionRefusedError as exc:
@@ -99,7 +116,11 @@ def connect_command(
         ) from exc
 
     hello = json.loads(ws.recv(timeout=COMMAND_RECV_TIMEOUT_SEC))
-    session: dict[str, Any] = {"hello": hello}
+    if hello.get("type") == "error":
+        message = hello.get("message") or hello.get("reason") or hello
+        raise ConnectionError(f"Command hello error: {message}")
+
+    session: dict[str, Any] = {"hello": hello, "url": url}
 
     try:
         initial_status = json.loads(ws.recv(timeout=2.0))
