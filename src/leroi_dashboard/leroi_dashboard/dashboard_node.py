@@ -156,6 +156,8 @@ class DashboardNode(Node):
         self.camera_connected = False
         self.last_connect_attempt_sec = 0.0
         self.sync_count = 0
+        self.blocks_sync_count = 0
+        self.last_blocks_sent_count = -1
         self.frame_count = 0
         self.sync_error_count = 0
         self.frame_error_count = 0
@@ -260,23 +262,37 @@ class DashboardNode(Node):
             self.get_logger().warning(f"Invalid mapped objects JSON: {exc}")
             return
 
-        blocks = self.blocks_from_mapped_objects(packet.get("objects", []))
+        frame_blocks = self.blocks_from_mapped_objects(
+            packet.get("objects", []),
+        )
+        now = time.time()
 
         with self.state_lock:
-            self.latest_blocks = blocks
+            for block in frame_blocks:
+                self.block_history.append({**block, "time": now})
+
+            cutoff = now - self.object_history_sec
+            self.block_history = [
+                block
+                for block in self.block_history
+                if float(block.get("time", 0.0)) >= cutoff
+            ]
+            self.latest_blocks = self.deduplicate_blocks(self.block_history)
             self.blocks_source = "mapped_objects"
-            self.last_mapped_objects_time = time.time()
+            self.last_mapped_objects_time = now
             self.last_detection_debug = {
                 "source": "mapped_objects",
                 "object_count": len(packet.get("objects", [])),
-                "block_count": len(blocks),
+                "frame_block_count": len(frame_blocks),
+                "block_count": len(self.latest_blocks),
             }
 
-        if len(blocks) != self.last_reported_block_count:
-            self.last_reported_block_count = len(blocks)
+        block_count = len(self.latest_blocks)
+        if block_count != self.last_reported_block_count:
+            self.last_reported_block_count = block_count
             self.get_logger().info(
                 "Dashboard blocks from mapped_objects: "
-                f"count={len(blocks)}"
+                f"history={block_count} frame={len(frame_blocks)}"
             )
 
     def blocks_from_mapped_objects(
@@ -306,16 +322,27 @@ class DashboardNode(Node):
                 class_name = str(obj.get("class_name", "object")).lower()
                 block_id = f"{class_name}-{round(x_field)}-{round(y_field)}"
 
-            blocks.append(
-                {
-                    "id": block_id,
-                    "x": x,
-                    "y": y,
-                    "color": obj.get("color", "unknown"),
-                }
-            )
+            entry: dict[str, Any] = {
+                "id": block_id,
+                "x": x,
+                "y": y,
+                "color": obj.get("color", "unknown"),
+            }
 
-        return self.deduplicate_blocks(blocks)
+            class_name = obj.get("class_name")
+            if class_name is not None:
+                entry["class_name"] = class_name
+
+            confidence = obj.get("confidence")
+            if confidence is not None:
+                entry["confidence"] = confidence
+
+            entry["x_field_cm"] = round(x_field, 1)
+            entry["y_field_cm"] = round(y_field, 1)
+
+            blocks.append(entry)
+
+        return blocks
 
     def detection_callback(self, msg: String):
         if time.time() - self.last_mapped_objects_time < self.object_history_sec:
@@ -515,14 +542,12 @@ class DashboardNode(Node):
             if not block_id or block_id in seen:
                 continue
             seen.add(block_id)
-            deduped.append(
-                {
-                    "id": block["id"],
-                    "x": block["x"],
-                    "y": block["y"],
-                    "color": block.get("color", "unknown"),
-                }
-            )
+            cleaned = {
+                key: value
+                for key, value in block.items()
+                if key != "time"
+            }
+            deduped.append(cleaned)
 
         return deduped
 
@@ -596,9 +621,17 @@ class DashboardNode(Node):
                         blocks=blocks,
                         bot_holding=bot_holding,
                         patch=blocks_initialized,
+                        wait_ack=False,
                     )
                     with self.state_lock:
                         self.blocks_initialized = True
+                    self.blocks_sync_count += 1
+                    if len(blocks) != self.last_blocks_sent_count:
+                        self.last_blocks_sent_count = len(blocks)
+                        self.get_logger().info(
+                            "Sent blocks to dashboard websocket: "
+                            f"count={len(blocks)}"
+                        )
 
             self.sync_count += 1
             self.last_error = ""
@@ -781,6 +814,8 @@ class DashboardNode(Node):
             "blocks_connected": self.blocks_connected,
             "camera_connected": self.camera_connected,
             "sync_count": self.sync_count,
+            "blocks_sync_count": self.blocks_sync_count,
+            "last_blocks_sent_count": self.last_blocks_sent_count,
             "frame_count": self.frame_count,
             "sync_error_count": self.sync_error_count,
             "frame_error_count": self.frame_error_count,

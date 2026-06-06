@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import quote
 
 from websockets.sync.client import ClientConnection, connect
@@ -107,17 +107,24 @@ def send_blocks(
     blocks: list[dict[str, Any]] | None = None,
     bot_holding: list[str] | None = None,
     patch: bool = False,
-) -> dict[str, Any]:
-    """Push field blocks and/or collected list. Returns server ack."""
+    wait_ack: bool = False,
+) -> Optional[dict[str, Any]]:
+    """Push field blocks and/or collected list.
+
+    The blocks channel often does not return an ack; default wait_ack=False
+    so a missing server reply does not break the sync loop.
+    """
     data: dict[str, Any] = {}
     if blocks is not None:
         data["blocks"] = blocks
     if bot_holding is not None:
         data["bot_holding"] = bot_holding
-    return _send_json(
-        ws,
-        {"type": "patch" if patch else "state", "data": data},
-    )
+
+    payload = {"type": "patch" if patch else "state", "data": data}
+    ws.send(json.dumps(payload))
+    if not wait_ack:
+        return None
+    return json.loads(ws.recv(timeout=RECV_TIMEOUT_SEC))
 
 
 def send_frame(ws: ClientConnection, jpeg: bytes) -> None:
