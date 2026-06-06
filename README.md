@@ -277,6 +277,58 @@ ros2 topic list | grep -E 'decision|robot'
 ros2 topic hz /decision/status
 ```
 
+### Policy testing (RL policy → confirm/cancel → decision)
+
+`leroi_bringup/launch/integration_policy_test.launch.py` runs the exported RL policy
+live and gates every proposed action behind an operator confirm/cancel, so you can
+vet the policy before it commands the robot. It brings up serial messenger, perception,
+the decision node, and the `policy_node`.
+
+The policy node reads game state (`/perception/oak_front/mapped_objects` + `/v5/odom`),
+runs the ONNX policy (`build_observation()` → model → argmax → action_id), publishes the
+proposed action on `/policy/pending_action`, and **waits** for you to publish a decision
+on `/policy/decision` before forwarding it to `/decision/action_request`.
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+# Real (or placeholder) model. Point at your sim's export:
+ros2 launch leroi_bringup integration_policy_test.launch.py \
+    policy_model_path:=$HOME/leroiai-jetsonWorkspace/models/policy/policy.onnx
+```
+
+Confirm or cancel the currently proposed action:
+
+```bash
+# See what the policy is proposing
+ros2 topic echo /policy/pending_action
+
+# Approve it
+ros2 topic pub --once /policy/decision std_msgs/String "data: 'confirm'"
+
+# Approve a point-based action (MOVE/COLLECT) and supply points inline (x,y,heading):
+ros2 topic pub --once /policy/decision std_msgs/String "data: 'confirm 250,200,90 270,220,45'"
+
+# Reject it (policy proposes again next tick)
+ros2 topic pub --once /policy/decision std_msgs/String "data: 'cancel'"
+```
+
+Notes:
+- **ONNX runs on CPU.** The policy is a small MLP at ~1 Hz, so CPU is plenty and it
+  keeps the GPU free for perception's YOLO TensorRT engine. To use the GPU you must
+  install NVIDIA's Jetson `onnxruntime-gpu` build, then set the `onnx_providers` param
+  (e.g. `TensorrtExecutionProvider,CUDAExecutionProvider,CPUExecutionProvider`).
+- onnxruntime install: `pip install --user "onnxruntime==1.17.0"` (newer PyPI wheels
+  crash on this Tegra CPU).
+- **`build_observation()` in `policy_node.py` must match your sim's observation space**
+  (feature order/normalization/dimension). The default layout is a placeholder; the node
+  zero-pads/truncates to the model's input size and logs a one-time warning on mismatch.
+- `models/policy/policy_dummy.onnx` is a random-weights stub (obs 65 → 23 actions) for
+  validating the wiring before the real model exists. Launch with
+  `policy_model_path:=$HOME/leroiai-jetsonWorkspace/models/policy/policy_dummy.onnx`.
+- Auto-run mode (no confirmation) for live play: add `require_confirmation:=false`.
+
 ## Roadmap / WIP
 
 - Rebuild ONNX model and TensorRT engine at `imgsz=640` (TODO: export ONNX at 640 and rebuild engine for higher accuracy).
