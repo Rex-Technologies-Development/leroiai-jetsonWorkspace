@@ -119,7 +119,7 @@ VexAI dashboard sync node. Publishes robot pose, field blocks, and a camera JPEG
 
 - Node entrypoint: `dashboard_node` (`ros2 run leroi_dashboard dashboard_node`)
 - Supporting code: `leroi_dashboard/dashboard_node.py`, `leroi_dashboard/leroi_dashboard.py`
-- Requires: `python3-websockets` (or `pip install websockets`)
+- Requires: `pip install 'websockets>=12.0'` (Ubuntu apt `python3-websockets` is too old)
 - Launched by: `leroi_bringup/launch/perception_serial.launch.py`, `leroi_bringup/launch/dashboard.launch.py`
 
 ### `leroi_telemetry` (ament_python)
@@ -139,7 +139,7 @@ Note: At the moment this package contains only the CMake/package scaffolding (no
 
 - ROS 2 Humble (this workspace has been built against `/opt/ros/humble`)
 - `colcon` + standard ROS 2 build tools
-- `python3-websockets` for `leroi_dashboard` (`sudo apt install python3-websockets`)
+- `pip install 'websockets>=12.0'` for `leroi_dashboard` (do **not** use apt `python3-websockets`; it is too old)
 
 On a machine with ROS 2 installed, you should have access to `colcon` and `ros2` on your PATH after sourcing the ROS setup script.
 

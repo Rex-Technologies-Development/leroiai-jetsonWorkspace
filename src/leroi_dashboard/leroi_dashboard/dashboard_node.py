@@ -33,7 +33,7 @@ class DashboardNode(Node):
         self.declare_parameter("sync_rate_hz", 2.0)
         self.declare_parameter("reconnect_period_sec", 5.0)
         self.declare_parameter("connect_log_interval_sec", 60.0)
-        self.declare_parameter("field_cm_to_dashboard", 1.0 / 2.54)
+        self.declare_parameter("field_cm_to_dashboard", 1.0)
         self.declare_parameter("block_class_substrings", ["block"])
         self.declare_parameter("enable_robot_channel", True)
         self.declare_parameter("enable_blocks_channel", True)

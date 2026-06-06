@@ -10,7 +10,7 @@ setup(
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
     ],
-    install_requires=["setuptools", "websockets"],
+    install_requires=["setuptools", "websockets>=12.0"],
     zip_safe=True,
     maintainer="Leo Zhieh",
     maintainer_email="notes.leozhieh@gmail.com",

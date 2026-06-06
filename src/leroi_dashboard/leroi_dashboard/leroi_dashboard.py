@@ -4,7 +4,7 @@
   from module import connect_camera, send_frame
 
   robot, _ = connect_robot("67goonbot")
-  send_location(robot, x=72, y=72, heading_deg=0)
+  send_location(robot, x=182.88, y=182.88, heading_deg=0)
   robot.close()
 """
 
