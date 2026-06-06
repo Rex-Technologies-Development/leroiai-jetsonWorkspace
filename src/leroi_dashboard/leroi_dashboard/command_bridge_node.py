@@ -55,7 +55,8 @@ class CommandBridgeNode(Node):
         self.declare_parameter("status_rate_hz", 2.0)
         self.declare_parameter("reconnect_period_sec", 5.0)
         self.declare_parameter("connect_log_interval_sec", 60.0)
-        self.declare_parameter("ws_recv_timeout_sec", 1.0)
+        self.declare_parameter("ws_recv_timeout_sec", 30.0)
+        self.declare_parameter("push_command_status", False)
 
         self.enable_command_bridge = self._parse_bool(
             self.get_parameter("enable_command_bridge").value,
@@ -82,6 +83,9 @@ class CommandBridgeNode(Node):
         )
         self.ws_recv_timeout_sec = float(
             self.get_parameter("ws_recv_timeout_sec").value
+        )
+        self.push_command_status = bool(
+            self.get_parameter("push_command_status").value
         )
 
         if self.status_rate_hz <= 0.0:
@@ -136,6 +140,7 @@ class CommandBridgeNode(Node):
         self.recv_thread_running = False
         self.last_connect_attempt_sec = 0.0
         self.last_connect_log_sec = 0.0
+        self.connect_fail_count = 0
         self.last_error = ""
         self.received_count = 0
         self.forwarded_count = 0
@@ -145,21 +150,29 @@ class CommandBridgeNode(Node):
         self.create_timer(1.0 / self.status_rate_hz, self.status_timer_callback)
         self.create_timer(0.05, self.process_incoming_timer_callback)
 
-        if self.bridge_active:
-            self.create_timer(
-                self.reconnect_period_sec,
-                self.reconnect_timer_callback,
-            )
-            self._connect_command_channel()
-
         self.get_logger().info("Command bridge node started.")
         self.get_logger().info(f"Bridge active: {self.bridge_active}")
         if self.bridge_active:
             self.get_logger().info(f"Command host: {self.dashboard_host}")
             self.get_logger().info(f"Command bot_id={self.bot_id}")
+            self.get_logger().info(
+                "Command channel: ws://"
+                f"{self.dashboard_host}/ws/command?role=bot&bot_id={self.bot_id}"
+            )
         self.get_logger().info(
             f"Action request topic: {self.action_request_topic}"
         )
+
+        self._initial_connect_timer = None
+        if self.bridge_active:
+            self.create_timer(
+                self.reconnect_period_sec,
+                self.reconnect_timer_callback,
+            )
+            self._initial_connect_timer = self.create_timer(
+                0.1,
+                self._initial_connect_timer_callback,
+            )
 
     @staticmethod
     def _parse_bool(value: Any, default: bool = False) -> bool:
@@ -174,6 +187,12 @@ class CommandBridgeNode(Node):
             if normalized in ("0", "false", "no", "off", ""):
                 return False
         return default
+
+    def _initial_connect_timer_callback(self):
+        if self._initial_connect_timer is not None:
+            self._initial_connect_timer.cancel()
+            self._initial_connect_timer = None
+        self._connect_command_channel()
 
     def reconnect_timer_callback(self):
         if not self.bridge_active or self.command_connected:
@@ -190,7 +209,8 @@ class CommandBridgeNode(Node):
 
     def status_timer_callback(self):
         if (
-            self.bridge_active
+            self.push_command_status
+            and self.bridge_active
             and self.command_connected
             and self.latest_decision_status is not None
         ):
@@ -335,12 +355,21 @@ class CommandBridgeNode(Node):
     def handle_ws_packet(self, packet: dict[str, Any]):
         message_type = str(packet.get("type", "")).lower()
 
-        if message_type in ("hello", "ping"):
+        # Server may push these; mock bot ignores everything except action_request.
+        if message_type in (
+            "hello",
+            "ping",
+            "connected",
+            "command_status",
+            "bot_status",
+            "action_ack",
+            "action_result",
+        ):
             return
 
         if message_type != "action_request":
-            self.get_logger().info(
-                f"Ignoring unsupported WS message type={packet.get('type')}"
+            self.get_logger().debug(
+                f"Ignoring command WS message type={packet.get('type')}"
             )
             return
 
@@ -455,21 +484,31 @@ class CommandBridgeNode(Node):
         try:
             with self.ws_lock:
                 self._close_command_socket()
-                self.command_ws, hello = connect_command(
+                self.command_ws, session = connect_command(
                     self.bot_id,
                     host=self.vexai_host,
                 )
                 self.command_connected = True
                 self.last_error = ""
+                self.connect_fail_count = 0
                 self._start_recv_thread()
 
+            hello = session.get("hello") or {}
+            initial_status = session.get("initial_status")
+            hello_type = hello.get("type", "ok")
             self.get_logger().info(
                 "Connected command channel to VexAI dashboard "
-                f"({hello.get('type', 'ok')})"
+                f"(hello={hello_type})"
             )
+            if initial_status is not None:
+                self.get_logger().info(
+                    "Command channel initial status: "
+                    f"{initial_status.get('type', initial_status)}"
+                )
         except Exception as exc:
             self.command_connected = False
             self.last_error = str(exc)
+            self.connect_fail_count += 1
             self._close_command_socket()
             self._log_connect_issue(exc)
 
@@ -546,13 +585,21 @@ class CommandBridgeNode(Node):
 
     def _log_connect_issue(self, exc: Exception):
         now = self.get_clock().now().nanoseconds / 1e9
-        if now - self.last_connect_log_sec < self.connect_log_interval_sec:
+        first_failure = self.connect_fail_count == 1
+        if (
+            not first_failure
+            and now - self.last_connect_log_sec < self.connect_log_interval_sec
+        ):
             return
 
         self.last_connect_log_sec = now
-        self.get_logger().info(
-            f"Command channel unavailable ({exc}). "
-            "Continuing offline; will retry in the background."
+        self.get_logger().warning(
+            "Command channel offline: could not connect to "
+            f"ws://{self.dashboard_host}/ws/command "
+            f"(bot_id={self.bot_id}). Error: {exc}. "
+            "The Robot Commands UI will show 'bot offline' until the server "
+            "deploys /ws/command. Pose/blocks/camera channels are separate. "
+            "Retrying in the background."
         )
 
     def publish_local_status(self):

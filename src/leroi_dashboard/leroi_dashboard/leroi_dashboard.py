@@ -19,6 +19,7 @@ from websockets.sync.client import ClientConnection, connect
 
 DEFAULT_HOST = os.environ.get("VEXAI_HOST", "162.248.101.133:6741")
 RECV_TIMEOUT_SEC = 10
+COMMAND_RECV_TIMEOUT_SEC = 30
 
 
 def resolve_host(host: str | None = None) -> str:
@@ -82,8 +83,31 @@ def connect_command(
     bot_id: str,
     host: str | None = None,
 ) -> tuple[ClientConnection, dict[str, Any]]:
-    """Open /ws/command as role=bot. Close the socket when done."""
-    return _connect(_ws_url("/ws/command", bot_id, host=host), "command")
+    """Open /ws/command as role=bot.
+
+    Matches the dashboard mock bot handshake:
+      1. recv hello JSON from server
+      2. optionally recv one immediate status push (if server sends it)
+      3. then enter recv loop for action_request messages
+    """
+    url = _ws_url("/ws/command", bot_id, host=host)
+    try:
+        ws = connect(url)
+    except ConnectionRefusedError as exc:
+        raise ConnectionError(
+            f"Could not connect command to {url}. Is the server running?"
+        ) from exc
+
+    hello = json.loads(ws.recv(timeout=COMMAND_RECV_TIMEOUT_SEC))
+    session: dict[str, Any] = {"hello": hello}
+
+    try:
+        initial_status = json.loads(ws.recv(timeout=2.0))
+        session["initial_status"] = initial_status
+    except TimeoutError:
+        pass
+
+    return ws, session
 
 
 def _send_json(ws: ClientConnection, payload: dict[str, Any]) -> dict[str, Any]:
