@@ -78,6 +78,14 @@ def connect_camera(
     )
 
 
+def connect_command(
+    bot_id: str,
+    host: str | None = None,
+) -> tuple[ClientConnection, dict[str, Any]]:
+    """Open /ws/command as role=bot. Close the socket when done."""
+    return _connect(_ws_url("/ws/command", bot_id, host=host), "command")
+
+
 def _send_json(ws: ClientConnection, payload: dict[str, Any]) -> dict[str, Any]:
     ws.send(json.dumps(payload))
     return json.loads(ws.recv(timeout=RECV_TIMEOUT_SEC))
@@ -128,3 +136,8 @@ def send_frame(ws: ClientConnection, jpeg: bytes) -> None:
 def send_frame_b64(ws: ClientConnection, jpeg_b64: str) -> None:
     """Push one JPEG frame as JSON base64. No ack from server."""
     ws.send(json.dumps({"type": "frame", "jpeg": jpeg_b64}))
+
+
+def send_command_message(ws: ClientConnection, payload: dict[str, Any]) -> None:
+    """Push one command-channel JSON message. No ack expected from server."""
+    ws.send(json.dumps(payload))
