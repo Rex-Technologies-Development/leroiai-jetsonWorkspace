@@ -39,10 +39,12 @@ ACTION_NAMES = {
 
     21: "RAM_LEFT_LONG_GOAL_OPPONENT",
     22: "RAM_LEFT_LONG_GOAL_ALLIANCE",
+    24: "RESET_GYRO",
 }
 
 STOP_ACTION_ID = 0
 COLLECT_BLOCKS_ACTION_ID = 2
+RESET_GYRO_ACTION_ID = 24
 SCORE_ACTION_IDS = set(range(3, 11))
 
 
@@ -69,6 +71,9 @@ class DecisionNode(Node):
         self.declare_parameter("allow_score_without_blocks", False)
         self.declare_parameter("block_new_action_while_waiting", True)
         self.declare_parameter("allow_stop_while_waiting", True)
+        # RESET_GYRO must be able to interrupt an in-flight action (robot stops,
+        # stands still, ACKs) so we can recalibrate the heading mid-routine.
+        self.declare_parameter("allow_gyro_reset_while_waiting", True)
 
         self.action_request_topic = str(
             self.get_parameter("action_request_topic").value
@@ -101,6 +106,9 @@ class DecisionNode(Node):
         )
         self.allow_stop_while_waiting = bool(
             self.get_parameter("allow_stop_while_waiting").value
+        )
+        self.allow_gyro_reset_while_waiting = bool(
+            self.get_parameter("allow_gyro_reset_while_waiting").value
         )
 
         self.command_pub = self.create_publisher(
@@ -335,12 +343,14 @@ class DecisionNode(Node):
         action_id = int(command["action_id"])
 
         if self.waiting_for_ack:
-            stop_allowed = (
-                self.allow_stop_while_waiting
-                and action_id == STOP_ACTION_ID
+            interrupt_allowed = (
+                self.allow_stop_while_waiting and action_id == STOP_ACTION_ID
+            ) or (
+                self.allow_gyro_reset_while_waiting
+                and action_id == RESET_GYRO_ACTION_ID
             )
 
-            if self.block_new_action_while_waiting and not stop_allowed:
+            if self.block_new_action_while_waiting and not interrupt_allowed:
                 return (
                     False,
                     f"BUSY_WAITING_FOR_ACK: pending_command_id={self.pending_command_id}",

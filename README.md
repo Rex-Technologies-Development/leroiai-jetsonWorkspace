@@ -277,26 +277,110 @@ ros2 topic list | grep -E 'decision|robot'
 ros2 topic hz /decision/status
 ```
 
-### Policy testing (RL policy → confirm/cancel → decision)
+### Gyro / heading reset (`RESET_GYRO`, action_id 24)
 
-`leroi_bringup/launch/integration_policy_test.launch.py` runs the exported RL policy
-live and gates every proposed action behind an operator confirm/cancel, so you can
-vet the policy before it commands the robot. It brings up serial messenger, perception,
-the decision node, and the `policy_node`.
+The IMU/heading lives on a separate **ESP32-C6 odom board** (its own USB-C serial
+port, native USB CDC — baud is ignored). Its firmware scans incoming bytes for a
+command letter: `R`/`r` = full reset (recalibrate bias + zero heading, ~1.2 s, board
+must be still); `Z`/`z` = zero-heading-only (instant).
 
-The policy node reads game state (`/perception/oak_front/mapped_objects` + `/v5/odom`),
-runs the ONNX policy (`build_observation()` → model → argmax → action_id), publishes the
-proposed action on `/policy/pending_action`, and **waits** for you to publish a decision
-on `/policy/decision` before forwarding it to `/decision/action_request`.
+`RESET_GYRO` (action_id 24) couples that board reset to the robot so it happens
+safely mid-routine:
+
+1. Send action 24 like any other action (test driver, policy, or `ros2 topic pub`).
+   It is allowed to **interrupt** an in-flight action (decision node treats it like
+   `STOP`), so the robot can drop what it's doing.
+2. The V5 stops, holds still, and sends its `ACK ... DONE` for command 24.
+3. On that ACK, the **serial messenger writes the reset char to the odom board** over
+   the board's own USB-C port (open → write → close; it never reads the board, so
+   `printf 'R' > /dev/ttyACMx` still works manually).
+
+So the Jetson never resets the gyro while the robot is moving — the V5's ACK is the
+"I'm holding still" handshake that gates the write.
+
+Trigger it manually (through the running decision → serial pipeline):
+
+```bash
+ros2 topic pub --once /decision/action_request std_msgs/String "data: '24'"
+# or full form:
+ros2 topic pub --once /decision/action_request std_msgs/String \
+  "data: '{\"action_id\":24,\"action_name\":\"RESET_GYRO\"}'"
+```
+
+**Startup reset (no V5, no ACK):** set `gyro_reset_on_startup:=true` to fire one
+reset straight to the board ~`gyro_startup_reset_delay_sec` after the node starts.
+Use this when you've squared the robot up at heading 0 by hand and just want the
+board zeroed before the run — `integration_test.launch.py` enables this by default.
+
+Relevant `serial_messenger_node` parameters:
+- `gyro_reset_on_ack` (default `true`) — enable the on-ACK coupling.
+- `gyro_reset_on_startup` (default `false`) — fire one reset at node startup.
+- `gyro_startup_reset_delay_sec` (default `2.0`) — wait before the startup reset.
+- `gyro_reset_action_id` (default `24`).
+- `gyro_board_port` (default `""` = auto-detect by the Espressif by-id string; ACM
+  numbers are not stable, so prefer auto-detect). Set explicitly to override.
+- `gyro_board_keywords` (default `"USB JTAG/serial debug unit,Espressif"`).
+- `gyro_reset_char` (default `"R"`; use `"Z"` for zero-only).
+- `gyro_reset_delay_sec` (default `0.0`) — optional settle wait after the ACK.
+
+> **V5-side note:** keep the robot still for ~1.2 s *after* ACKing a full (`R`) reset
+> so the recalibration completes cleanly. The `decision_node` won't issue the next
+> action until something requests one, but if you auto-chain commands, leave a gap
+> (or use `gyro_reset_char:="Z"` for an instant zero-only reset). The reset count is
+> reported on `/serial_messenger/status` as `gyro_reset_count`.
+
+### Policy: RL model **or** defined strategy (confirm/cancel → decision)
+
+The `leroi_policy` package can drive the robot two ways, selected by the
+`strategy_mode` parameter. Both produce the same `ActionProposal` and feed the
+same pipeline — `game state → strategy.propose() → (operator confirm/cancel) →
+/decision/action_request` — so the rest of the stack doesn't care which is active.
+
+- **`strategy_mode:=rl`** — runs an exported RL model (ONNX): `build_observation()`
+  → model → argmax → `action_id`. This is the learned policy.
+- **`strategy_mode:=scripted`** — executes a fixed, repeatable game plan with **no
+  learning**: a state machine that loops
+  `COLLECT_BLOCKS → SCORE (alliance long goal) → MOVE out to scan →` then, based on
+  what it sees, `→ DESCORE if opponent blocks are visible, else → collect again`.
+
+Architecture (so both modes stay swappable):
+
+- `leroi_policy/strategies/base.py` — `GameState`, `ActionProposal`, `Strategy` ABC.
+- `leroi_policy/strategies/rl_strategy.py` — the ONNX model wrapper. **`build_observation()`
+  now lives here** (this is the function you must align with your sim's obs space).
+- `leroi_policy/strategies/scripted_strategy.py` — the defined game-plan state machine.
+- `leroi_policy/strategies/actions.py` — shared action-id vocabulary.
+- `leroi_policy/policy_node.py` — thin ROS driver: builds `GameState`, calls the
+  selected strategy, runs the confirm/cancel gate, publishes the request.
+
+`leroi_bringup/launch/integration_policy_test.launch.py` brings up serial messenger,
+perception, the decision node, and `policy_node`, and gates every proposed action
+behind an operator confirm/cancel so you can vet it before it commands the robot.
 
 ```bash
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
-# Real (or placeholder) model. Point at your sim's export:
+# RL model (default). Point at your sim's export:
 ros2 launch leroi_bringup integration_policy_test.launch.py \
+    strategy_mode:=rl \
     policy_model_path:=$HOME/leroiai-jetsonWorkspace/models/policy/policy.onnx
+
+# Defined strategy (no model needed):
+ros2 launch leroi_bringup integration_policy_test.launch.py \
+    strategy_mode:=scripted alliance_color:=blue
 ```
+
+The scripted strategy's waypoints/ids are parameters on `policy_node` (defaults are
+placeholders to tune to the real field):
+- `alliance_color` (`blue`/`red`) — also picks default score/descore goal ids.
+- `score_action_id`, `descore_action_id` — `0` = use the alliance default.
+- `scan_points_json`, `collect_fallback_points_json` — JSON arrays of `{x,y,heading}`
+  (cm). Collect targets come from live perception when blocks are visible; the
+  fallback points are used when none are seen.
+- `max_collect_targets`, `min_opponent_blocks_to_descore`.
+
+Watch the current plan/phase on `/policy/status` (includes `strategy_status.phase`).
 
 Confirm or cancel the currently proposed action:
 
@@ -321,9 +405,10 @@ Notes:
   (e.g. `TensorrtExecutionProvider,CUDAExecutionProvider,CPUExecutionProvider`).
 - onnxruntime install: `pip install --user "onnxruntime==1.17.0"` (newer PyPI wheels
   crash on this Tegra CPU).
-- **`build_observation()` in `policy_node.py` must match your sim's observation space**
-  (feature order/normalization/dimension). The default layout is a placeholder; the node
-  zero-pads/truncates to the model's input size and logs a one-time warning on mismatch.
+- **`build_observation()` in `leroi_policy/strategies/rl_strategy.py` must match your
+  sim's observation space** (feature order/normalization/dimension). The default layout
+  is a placeholder; it zero-pads/truncates to the model's input size and logs a one-time
+  warning on mismatch. (Only used by `strategy_mode:=rl`.)
 - `models/policy/policy_dummy.onnx` is a random-weights stub (obs 65 → 23 actions) for
   validating the wiring before the real model exists. Launch with
   `policy_model_path:=$HOME/leroiai-jetsonWorkspace/models/policy/policy_dummy.onnx`.

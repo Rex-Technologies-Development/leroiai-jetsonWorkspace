@@ -52,6 +52,29 @@ class SerialMessengerNode(Node):
         self.declare_parameter("forward_detections_to_v5", False)
         self.declare_parameter("debug_log_detections", False)
 
+        # --- Gyro/odom-board reset coupling ---
+        # When the V5 ACKs a RESET_GYRO action (it has stopped and is holding
+        # still), write the reset character to the ESP32 odom board over its own
+        # USB-C serial port. The board scans incoming bytes for the command:
+        #   'R' (or 'r') -> full reset: recalibrate bias + zero heading (~1.2 s)
+        #   'Z' (or 'z') -> zero heading only (instant)
+        self.declare_parameter("gyro_reset_on_ack", True)
+        self.declare_parameter("gyro_reset_action_id", 24)
+        # Explicit board port; leave empty to auto-detect by keyword. ACM numbers
+        # are not stable, so auto-detect (by the Espressif by-id string) is safer.
+        self.declare_parameter("gyro_board_port", "")
+        self.declare_parameter(
+            "gyro_board_keywords",
+            "USB JTAG/serial debug unit,Espressif",
+        )
+        self.declare_parameter("gyro_reset_char", "R")
+        # Optional wait after the ACK before writing (e.g. let the robot settle).
+        self.declare_parameter("gyro_reset_delay_sec", 0.0)
+        # Fire one reset directly at node startup (no V5, no ACK). Use when you
+        # have squared the robot up at heading 0 and just want to zero the board.
+        self.declare_parameter("gyro_reset_on_startup", False)
+        self.declare_parameter("gyro_startup_reset_delay_sec", 2.0)
+
         self.serial_port = str(self.get_parameter("serial_port").value)
         self.baud_rate = int(self.get_parameter("baud_rate").value)
         self.read_timeout_sec = float(self.get_parameter("read_timeout_sec").value)
@@ -88,6 +111,29 @@ class SerialMessengerNode(Node):
         self.debug_log_detections = bool(
             self.get_parameter("debug_log_detections").value
         )
+
+        self.gyro_reset_on_ack = bool(self.get_parameter("gyro_reset_on_ack").value)
+        self.gyro_reset_action_id = int(
+            self.get_parameter("gyro_reset_action_id").value
+        )
+        self.gyro_board_port = str(self.get_parameter("gyro_board_port").value)
+        gyro_keywords_raw = str(self.get_parameter("gyro_board_keywords").value)
+        self.gyro_board_keywords = [
+            keyword.strip()
+            for keyword in gyro_keywords_raw.split(",")
+            if keyword.strip()
+        ]
+        self.gyro_reset_char = str(self.get_parameter("gyro_reset_char").value) or "R"
+        self.gyro_reset_delay_sec = float(
+            self.get_parameter("gyro_reset_delay_sec").value
+        )
+        self.gyro_reset_on_startup = bool(
+            self.get_parameter("gyro_reset_on_startup").value
+        )
+        self.gyro_startup_reset_delay_sec = float(
+            self.get_parameter("gyro_startup_reset_delay_sec").value
+        )
+        self.gyro_reset_count = 0
 
         self.sync_bytes = b"\xaa\x55\xcc\x33"
 
@@ -194,6 +240,14 @@ class SerialMessengerNode(Node):
         else:
             self.heartbeat_timer = None
 
+        # One-shot startup gyro reset (self-cancels on first fire).
+        self._startup_gyro_timer = None
+        if self.gyro_reset_on_startup:
+            self._startup_gyro_timer = self.create_timer(
+                self.gyro_startup_reset_delay_sec,
+                self.startup_gyro_reset,
+            )
+
         self.get_logger().info("Serial messenger node started.")
         self.get_logger().info(f"serial_port: {self.serial_port or 'auto'}")
         self.get_logger().info(f"baud_rate: {self.baud_rate}")
@@ -201,6 +255,11 @@ class SerialMessengerNode(Node):
         self.get_logger().info(f"auto_port_keywords: {self.auto_port_keywords}")
         self.get_logger().info(
             f"forward_detections_to_v5: {self.forward_detections_to_v5}"
+        )
+        self.get_logger().info(
+            f"gyro_reset_on_ack: {self.gyro_reset_on_ack} "
+            f"(action_id={self.gyro_reset_action_id}, char='{self.gyro_reset_char}', "
+            f"board={self.gyro_board_port or 'auto'})"
         )
 
     def tx_callback(self, msg: String):
@@ -752,6 +811,97 @@ class SerialMessengerNode(Node):
             f"detail={detail}"
         )
 
+        if (
+            self.gyro_reset_on_ack
+            and status == "DONE"
+            and action_id is not None
+            and int(action_id) == self.gyro_reset_action_id
+        ):
+            self.trigger_gyro_reset(command_id, action_id)
+
+    def trigger_gyro_reset(self, command_id, action_id):
+        """Write the reset char to the ESP32 odom board on a RESET_GYRO ACK.
+
+        The robot has stopped and is holding still (that's why it ACKed), so it
+        is safe to recalibrate the gyro now.
+        """
+        if self.gyro_reset_delay_sec > 0:
+            time.sleep(self.gyro_reset_delay_sec)
+
+        self.write_gyro_reset(
+            reason=f"ack command_id={command_id} action_id={action_id}"
+        )
+
+    def startup_gyro_reset(self):
+        """One-shot reset at node startup (no V5, no ACK).
+
+        Use when the robot has been squared up at heading 0 by hand and you just
+        want the board zeroed/recalibrated before the run begins.
+        """
+        self.destroy_timer(self._startup_gyro_timer)
+        self.write_gyro_reset(reason="startup")
+
+    def write_gyro_reset(self, reason: str) -> bool:
+        """Open the odom board's own USB-C port, write the reset char, close.
+
+        We never read the board, so manual tools (``printf 'R' > /dev/ttyACMx``)
+        keep working. Returns True if the byte was written.
+        """
+        port = self.gyro_board_port or self.find_gyro_board_port()
+
+        if not port:
+            self.get_logger().warning(
+                f"Gyro reset ({reason}) requested but no odom board port was "
+                f"found; skipping. Set gyro_board_port or check the board's USB-C."
+            )
+            return False
+
+        char = self.gyro_reset_char[:1] if self.gyro_reset_char else "R"
+
+        try:
+            with serial.Serial(
+                port=port,
+                baudrate=self.baud_rate,  # ignored for native USB CDC
+                write_timeout=1.0,
+            ) as board:
+                board.write(char.encode("ascii", errors="ignore"))
+                board.flush()
+
+            self.gyro_reset_count += 1
+            self.get_logger().info(
+                f"Gyro reset ({reason}): wrote '{char}' to odom board on {port}. "
+                f"Keep the board still ~1.2 s for full recalibration."
+            )
+            return True
+        except (serial.SerialException, OSError) as exc:
+            self.get_logger().warning(
+                f"Gyro reset ({reason}) write failed on {port}: {exc}"
+            )
+            return False
+
+    def find_gyro_board_port(self) -> Optional[str]:
+        if self.gyro_board_port:
+            return self.gyro_board_port
+
+        try:
+            ports = list(serial.tools.list_ports.comports())
+        except Exception as exc:  # noqa: BLE001 - listing must never crash IO loop
+            self.get_logger().warning(f"Could not list serial ports: {exc}")
+            return None
+
+        for port in ports:
+            device = port.device or ""
+            # Never pick the V5 port we're already talking to.
+            if device and device == self.current_port:
+                continue
+
+            searchable = f"{port.description or ''} {port.manufacturer or ''} {device}"
+            for keyword in self.gyro_board_keywords:
+                if keyword and keyword in searchable:
+                    return device
+
+        return None
+
     def publish_parsed_message(self, packet: dict):
         msg = String()
         msg.data = json.dumps(packet)
@@ -777,6 +927,7 @@ class SerialMessengerNode(Node):
             "tx_drop_disconnected_count": self.tx_drop_disconnected_count,
             "tx_queue_size": self.tx_queue.qsize(),
             "reconnect_count": self.reconnect_count,
+            "gyro_reset_count": self.gyro_reset_count,
             "latest_robot_pose": latest_pose,
             "last_rx_age_sec": None
             if self.last_rx_time == 0.0

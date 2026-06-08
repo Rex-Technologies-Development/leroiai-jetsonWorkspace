@@ -144,7 +144,10 @@ def generate_launch_description():
                 "decision_topic": "/policy/decision",
                 "status_topic": "/policy/status",
 
-                # Model
+                # Strategy: "rl" (ONNX model) or "scripted" (defined game plan).
+                "strategy_mode": LaunchConfiguration("strategy_mode"),
+
+                # RL strategy
                 "model_path": LaunchConfiguration("policy_model_path"),
                 # CPU is plenty for a small policy MLP and keeps the GPU free for
                 # perception's YOLO TensorRT engine. To use the GPU, install the
@@ -153,6 +156,15 @@ def generate_launch_description():
                 "onnx_providers": "CPUExecutionProvider",
                 "obs_dim_override": 0,
                 "action_id_map": "",
+
+                # Scripted strategy (defined game plan). 0 ids -> alliance default.
+                "alliance_color": LaunchConfiguration("alliance_color"),
+                "score_action_id": 0,
+                "descore_action_id": 0,
+                "scan_points_json": "",
+                "collect_fallback_points_json": "",
+                "max_collect_targets": 3,
+                "min_opponent_blocks_to_descore": 1,
 
                 # Behavior
                 "inference_rate_hz": LaunchConfiguration("inference_rate_hz"),
@@ -166,6 +178,16 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument(
+                "strategy_mode",
+                default_value="rl",
+                description="Policy strategy: 'rl' (ONNX model) or 'scripted' (defined plan)",
+            ),
+            DeclareLaunchArgument(
+                "alliance_color",
+                default_value="blue",
+                description="Alliance for the scripted strategy: blue or red",
+            ),
             DeclareLaunchArgument(
                 "policy_model_path",
                 default_value=POLICY_MODEL_PATH,

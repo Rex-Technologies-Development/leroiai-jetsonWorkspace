@@ -78,6 +78,14 @@ def generate_launch_description():
                 "detection_topic": "/perception/oak_front/detections",
                 "forward_detections_to_v5": False,
                 "debug_log_detections": False,
+
+                # Gyro/odom-board reset. Zero the heading once at startup (robot
+                # is squared up at heading 0 by hand), and also reset on a
+                # RESET_GYRO (action 24) ACK during the run.
+                "gyro_reset_on_ack": True,
+                "gyro_reset_on_startup": True,
+                "gyro_startup_reset_delay_sec": 2.0,
+                "gyro_reset_char": "R",
             }
         ],
     )
