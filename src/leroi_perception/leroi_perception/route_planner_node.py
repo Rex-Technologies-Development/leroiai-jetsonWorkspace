@@ -106,6 +106,13 @@ class RoutePlannerNode(Node):
         self.declare_parameter("max_carry_blocks", 5)
         self.declare_parameter("already_held_blocks", 0)
 
+        # Pickup zone limit (field cm). Restricts which blocks this robot will be
+        # routed to, independent of the field bounds used for geometry. For the
+        # 24in robot we keep it on the LEFT half (small wander allowed) so it does
+        # not impede the 15in robot on the right. Defaults = no restriction.
+        self.declare_parameter("pickup_x_min_cm", -1.0e9)
+        self.declare_parameter("pickup_x_max_cm", 1.0e9)
+
         # Scoring / filtering
         self.declare_parameter("min_confidence", 0.35)
         self.declare_parameter("wall_margin_cm", 45.0)
@@ -168,6 +175,9 @@ class RoutePlannerNode(Node):
         self.already_held_blocks = int(
             self.get_parameter("already_held_blocks").value
         )
+
+        self.pickup_x_min_cm = float(self.get_parameter("pickup_x_min_cm").value)
+        self.pickup_x_max_cm = float(self.get_parameter("pickup_x_max_cm").value)
 
         self.min_confidence = float(self.get_parameter("min_confidence").value)
         self.wall_margin_cm = float(self.get_parameter("wall_margin_cm").value)
@@ -410,6 +420,10 @@ class RoutePlannerNode(Node):
                 continue
 
             if not self.in_field_bounds(x, y):
+                continue
+
+            # Keep this robot inside its pickup zone (e.g. left half for the 24in).
+            if not (self.pickup_x_min_cm <= x <= self.pickup_x_max_cm):
                 continue
 
             if self.near_wall_count(x, y) >= 2:

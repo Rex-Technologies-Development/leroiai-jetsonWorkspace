@@ -26,6 +26,7 @@ class GameState:
     odom: Optional[Dict[str, Any]] = None            # parsed /v5/odom packet
     mapped_objects: Optional[Dict[str, Any]] = None  # parsed mapped_objects packet
     detections: Optional[Dict[str, Any]] = None      # parsed detections packet
+    route_suggestion: Optional[Dict[str, Any]] = None  # latest /perception/route_suggestion
     blocks: List[Dict[str, Any]] = field(default_factory=list)  # extracted, field cm
     decision_busy: bool = False                      # decision node waiting for an ACK
     now_ns: int = 0

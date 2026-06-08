@@ -43,6 +43,7 @@ class PolicyNode(Node):
         # --- Topics ---
         self.declare_parameter("mapped_objects_topic", "/perception/oak_front/mapped_objects")
         self.declare_parameter("detections_topic", "/perception/oak_front/detections")
+        self.declare_parameter("route_suggestion_topic", "/perception/route_suggestion")
         self.declare_parameter("odom_topic", "/v5/odom")
         self.declare_parameter("action_request_topic", "/decision/action_request")
         self.declare_parameter("pending_action_topic", "/policy/pending_action")
@@ -63,12 +64,27 @@ class PolicyNode(Node):
 
         # --- Scripted strategy params ---
         self.declare_parameter("alliance_color", "blue")
-        self.declare_parameter("score_action_id", 0)      # 0 -> alliance default
-        self.declare_parameter("descore_action_id", 0)    # 0 -> alliance default
-        self.declare_parameter("scan_points_json", "")
-        self.declare_parameter("collect_fallback_points_json", "")
+        # Action ids; 0 -> alliance-aware default.
+        self.declare_parameter("score_long_action_id", 0)
+        self.declare_parameter("score_midlow_action_id", 0)
+        self.declare_parameter("descore_action_id", 0)
         self.declare_parameter("max_collect_targets", 3)
-        self.declare_parameter("min_opponent_blocks_to_descore", 1)
+        # Alliance-specific positions (robot units = inches), JSON arrays.
+        self.declare_parameter("scan_point_blue_json", "")
+        self.declare_parameter("scan_point_red_json", "")
+        self.declare_parameter("collect_fallback_blue_json", "")
+        self.declare_parameter("collect_fallback_red_json", "")
+        # Goal-state assessment.
+        self.declare_parameter("goal_regions_json", "")
+        self.declare_parameter("goal_color_margin", 1)
+        self.declare_parameter("goal_empty_max", 1)
+        self.declare_parameter("goal_full_min", 4)
+        # Collect routing + zone.
+        self.declare_parameter("use_route_planner_for_collect", True)
+        self.declare_parameter("zone_x_max_in", 0.0)      # 0 -> no zone limit
+        self.declare_parameter("zone_x_wander_in", 12.0)
+        # Perception is cm, V5/odom is inches. 1/2.54 converts collect targets.
+        self.declare_parameter("perception_to_robot_scale", 1.0 / 2.54)
 
         # --- Behavior ---
         self.declare_parameter("inference_rate_hz", 1.0)
@@ -80,6 +96,7 @@ class PolicyNode(Node):
         gp = self.get_parameter
         self.mapped_objects_topic = str(gp("mapped_objects_topic").value)
         self.detections_topic = str(gp("detections_topic").value)
+        self.route_suggestion_topic = str(gp("route_suggestion_topic").value)
         self.odom_topic = str(gp("odom_topic").value)
         self.action_request_topic = str(gp("action_request_topic").value)
         self.pending_action_topic = str(gp("pending_action_topic").value)
@@ -95,8 +112,8 @@ class PolicyNode(Node):
         self.field_size_cm = float(gp("field_size_cm").value)
 
         # Strategy config: a flat dict each strategy reads what it needs from.
-        score_id = int(gp("score_action_id").value)
-        descore_id = int(gp("descore_action_id").value)
+        # Action ids pass through as-is; 0 lets the scripted strategy pick the
+        # alliance-aware default.
         strategy_cfg: Dict[str, Any] = {
             # RL
             "model_path": str(gp("model_path").value),
@@ -108,20 +125,28 @@ class PolicyNode(Node):
             "field_size_cm": self.field_size_cm,
             # Scripted
             "alliance_color": str(gp("alliance_color").value),
-            "scan_points_json": str(gp("scan_points_json").value),
-            "collect_fallback_points_json": str(gp("collect_fallback_points_json").value),
+            "score_long_action_id": int(gp("score_long_action_id").value),
+            "score_midlow_action_id": int(gp("score_midlow_action_id").value),
+            "descore_action_id": int(gp("descore_action_id").value),
             "max_collect_targets": int(gp("max_collect_targets").value),
-            "min_opponent_blocks_to_descore": int(gp("min_opponent_blocks_to_descore").value),
+            "scan_point_blue_json": str(gp("scan_point_blue_json").value),
+            "scan_point_red_json": str(gp("scan_point_red_json").value),
+            "collect_fallback_blue_json": str(gp("collect_fallback_blue_json").value),
+            "collect_fallback_red_json": str(gp("collect_fallback_red_json").value),
+            "goal_regions_json": str(gp("goal_regions_json").value),
+            "goal_color_margin": int(gp("goal_color_margin").value),
+            "goal_empty_max": int(gp("goal_empty_max").value),
+            "goal_full_min": int(gp("goal_full_min").value),
+            "use_route_planner_for_collect": bool(gp("use_route_planner_for_collect").value),
+            "zone_x_max_in": float(gp("zone_x_max_in").value),
+            "zone_x_wander_in": float(gp("zone_x_wander_in").value),
+            "perception_to_robot_scale": float(gp("perception_to_robot_scale").value),
         }
-        # 0 means "let the strategy pick the alliance-aware default".
-        if score_id > 0:
-            strategy_cfg["score_action_id"] = score_id
-        if descore_id > 0:
-            strategy_cfg["descore_action_id"] = descore_id
 
         # --- State (latest cached perception/pose) ---
         self.latest_mapped: Optional[Dict[str, Any]] = None
         self.latest_detections: Optional[Dict[str, Any]] = None
+        self.latest_route: Optional[Dict[str, Any]] = None
         self.latest_odom: Optional[Dict[str, Any]] = None
         self.decision_waiting_for_ack = False
 
@@ -137,6 +162,7 @@ class PolicyNode(Node):
         # --- Subscriptions ---
         self.create_subscription(String, self.mapped_objects_topic, self.mapped_objects_cb, 10)
         self.create_subscription(String, self.detections_topic, self.detections_cb, 10)
+        self.create_subscription(String, self.route_suggestion_topic, self.route_suggestion_cb, 10)
         self.create_subscription(String, self.odom_topic, self.odom_cb, 10)
         self.create_subscription(String, self.decision_topic, self.decision_cb, 10)
         self.create_subscription(String, self.decision_status_topic, self.decision_status_cb, 10)
@@ -169,6 +195,11 @@ class PolicyNode(Node):
 
     def detections_cb(self, msg: String):
         self.latest_detections = self._safe_json(msg.data)
+
+    def route_suggestion_cb(self, msg: String):
+        data = self._safe_json(msg.data)
+        if data is not None:
+            self.latest_route = data
 
     def odom_cb(self, msg: String):
         data = self._safe_json(msg.data)
@@ -245,6 +276,7 @@ class PolicyNode(Node):
             odom=self.latest_odom,
             mapped_objects=self.latest_mapped,
             detections=self.latest_detections,
+            route_suggestion=self.latest_route,
             blocks=extract_blocks(self.latest_mapped),
             decision_busy=self.decision_waiting_for_ack,
             now_ns=self.get_clock().now().nanoseconds,

@@ -18,29 +18,30 @@ FIELD_MAP_PATH = os.path.expanduser(
 
 # Command scenario the test driver walks through, one ACK at a time.
 #
-#   1) MOVE_CHASSIS_ONLY (action_id 1) -> drive through both waypoints.
+#   1) COLLECT_BLOCKS (action_id 2) -> drive through the block waypoints.
+#   2) SCORE_LEFT_LONG_GOAL_ALLIANCE (action_id 3) -> self-navigates and scores.
 #
 # Units are INCHES (the VEX side expects inches; the Jetson pipeline passes
 # x/y/heading through unchanged). Heading is in degrees. Edit freely.
 TEST_SEQUENCE = [
     {
-        # MOVE_CHASSIS_ONLY: drive through 3 waypoints, ending back at origin facing 0.
-        "action_id": 1,
-        "points": [
-            {"x": 30.0, "y": 30.0, "heading": 90.0},
-            {"x": 15.0, "y": 15.0, "heading": 45.0},
-            {"x": 0.0, "y": 0.0, "heading": 0.0},
-        ],
-        "params": {"label": "return_to_origin_3pts"},
-    },
-    {
-        # COLLECT_BLOCKS: prime intake and drive to the block waypoints.
+        # COLLECT_BLOCKS: prime intake and drive through the block waypoints.
         "action_id": 2,
         "points": [
-            {"x": 20.0, "y": 25.0, "heading": 20.0},
-            {"x": 20.0, "y": 40.0, "heading": 0.0},
+            {"x": 46.0, "y": 48.0, "heading": -30.0},
+            {"x": 48.0, "y": 65.0, "heading": 0.0},
+            {"x": 48.0, "y": 30.0, "heading": 0.0},
         ],
-        "params": {"label": "collect_blocks_2pts"},
+        "params": {"label": "collect_blocks_3pts"},
+    },
+    {
+        # SCORE_LEFT_LONG_GOAL_ALLIANCE: auto-navigates and scores on the V5.
+        # No target points (scoring actions self-navigate). Requires the
+        # COLLECT_BLOCKS above to have completed first, since the decision node
+        # rejects scoring without collected blocks.
+        "action_id": 3,
+        "points": [],
+        "params": {"label": "score_left_long_goal_alliance"},
     },
 ]
 
@@ -204,8 +205,8 @@ def generate_launch_description():
                 "startup_delay_sec": LaunchConfiguration("startup_delay_sec"),
                 # How long the simulated robot "works" before ACKing DONE.
                 "sim_ack_delay_sec": 1.0,
-                # Gap after an ACK before sending the next command.
-                "inter_command_delay_sec": 1.0,
+                # Gap after an ACK before sending the next command (cmd 2 -> 3).
+                "inter_command_delay_sec": 0.5,
                 # True: this node fakes the robot ACKs. Set false if a real
                 # robot/serial bridge is connected and will ACK on its own.
                 "simulate_robot_ack": LaunchConfiguration("simulate_robot_ack"),
@@ -220,8 +221,12 @@ def generate_launch_description():
         [
             DeclareLaunchArgument(
                 "startup_delay_sec",
-                default_value="5.0",
-                description="Seconds to wait after launch before the first command",
+                # Startup gyro reset fires at gyro_startup_reset_delay_sec (2.0s);
+                # this leaves ~4s after that reset before the first command so the
+                # board finishes recalibrating and settles.
+                default_value="6.0",
+                description="Seconds to wait after launch before the first command "
+                "(~4s after the 2s startup gyro reset)",
             ),
             DeclareLaunchArgument(
                 "simulate_robot_ack",

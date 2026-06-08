@@ -339,19 +339,41 @@ same pipeline — `game state → strategy.propose() → (operator confirm/cance
 - **`strategy_mode:=rl`** — runs an exported RL model (ONNX): `build_observation()`
   → model → argmax → `action_id`. This is the learned policy.
 - **`strategy_mode:=scripted`** — executes a fixed, repeatable game plan with **no
-  learning**: a state machine that loops
-  `COLLECT_BLOCKS → SCORE (alliance long goal) → MOVE out to scan →` then, based on
-  what it sees, `→ DESCORE if opponent blocks are visible, else → collect again`.
+  learning**: a state machine that
+  1. moves to a **scan** position near our parking zone and looks at the goals,
+  2. **assesses** goal state from perception (our-color vs opponent-color blocks in
+     the goal regions, and how full they are), then branches:
+     - mostly **opponent** colors → **DESCORE**
+     - mainly **our** colors → **collect** more, then **score mid/low**
+     - neutral & ~empty → **collect** more, then **score long goal**
+     - neutral & ~full → **DESCORE**
+  3. returns to the scan position and repeats.
+
+  Goal state is read from the configured **goal regions** (perception cm). Collect
+  targets come from the **route planner** (`/perception/route_suggestion`), which
+  already clusters, applies wall margins, skips goals, and respects a pickup zone;
+  the strategy converts those cm points to inches and zone-clamps them.
 
 Architecture (so both modes stay swappable):
 
 - `leroi_policy/strategies/base.py` — `GameState`, `ActionProposal`, `Strategy` ABC.
 - `leroi_policy/strategies/rl_strategy.py` — the ONNX model wrapper. **`build_observation()`
   now lives here** (this is the function you must align with your sim's obs space).
-- `leroi_policy/strategies/scripted_strategy.py` — the defined game-plan state machine.
+- `leroi_policy/strategies/scripted_strategy.py` — the defined game-plan state machine
+  (scan → assess → branch → scan).
 - `leroi_policy/strategies/actions.py` — shared action-id vocabulary.
-- `leroi_policy/policy_node.py` — thin ROS driver: builds `GameState`, calls the
-  selected strategy, runs the confirm/cancel gate, publishes the request.
+- `leroi_policy/policy_node.py` — thin ROS driver: builds `GameState` (odom, mapped
+  objects, route suggestion), calls the selected strategy, runs the confirm/cancel
+  gate, publishes the request.
+
+**Units:** perception is in **cm**, the V5/odom is in **inches**. The scripted
+strategy converts collect/route points cm→inches (`perception_to_robot_scale`,
+default 1/2.54). Author scan/fallback waypoints directly in inches.
+
+**Left-half zone (24in robot):** to avoid impeding the 15in robot on the right, the
+route planner only routes to blocks with `x ≤ pickup_x_max_cm` (default 182.88 cm =
+72 in), and the strategy clamps any waypoint past `zone_x_max_in` (default 72 in,
++`zone_x_wander_in`).
 
 `leroi_bringup/launch/integration_policy_test.launch.py` brings up serial messenger,
 perception, the decision node, and `policy_node`, and gates every proposed action
@@ -373,14 +395,78 @@ ros2 launch leroi_bringup integration_policy_test.launch.py \
 
 The scripted strategy's waypoints/ids are parameters on `policy_node` (defaults are
 placeholders to tune to the real field):
-- `alliance_color` (`blue`/`red`) — also picks default score/descore goal ids.
-- `score_action_id`, `descore_action_id` — `0` = use the alliance default.
-- `scan_points_json`, `collect_fallback_points_json` — JSON arrays of `{x,y,heading}`
-  (cm). Collect targets come from live perception when blocks are visible; the
-  fallback points are used when none are seen.
-- `max_collect_targets`, `min_opponent_blocks_to_descore`.
+- `alliance_color` (`blue`/`red`) — selectable per match; also picks default
+  score-long / score-mid-low / descore (wall-side) goal ids.
+- `score_long_action_id`, `score_midlow_action_id`, `descore_action_id` — `0` = use
+  the alliance default.
+- `scan_point_blue_json` / `scan_point_red_json` — scan position per alliance, JSON
+  array of `{x,y,heading}` in **inches** (near that alliance's parking zone).
+- `collect_fallback_blue_json` / `collect_fallback_red_json` — collect waypoints
+  (inches) used only if the route planner has no suggestion.
+- `goal_regions_json` — list of `{name,x_min,x_max,y_min,y_max}` rectangles in
+  field **cm** used to decide which blocks count as "in a goal". Empty → assess all
+  detected blocks (rough proxy until calibrated).
+- `goal_color_margin` (dominance threshold), `goal_empty_max`, `goal_full_min`
+  (fullness thresholds, block counts).
+- `max_collect_targets`, `use_route_planner_for_collect`, `zone_x_max_in`,
+  `zone_x_wander_in`, `perception_to_robot_scale`.
 
-Watch the current plan/phase on `/policy/status` (includes `strategy_status.phase`).
+Launch args: `strategy_mode`, `alliance_color`, `zone_x_max_in`, `pickup_x_max_cm`.
+Watch the current plan/phase + last assessment on `/policy/status`.
+
+#### Status — defined strategy (last updated 2026-06-08; pick up here)
+
+**Done & verified (off-robot):**
+- Strategy abstraction + factory: `strategy_mode:=rl|scripted` selects between the
+  ONNX model and the defined plan; both share `GameState`/`ActionProposal` and the
+  same confirm/cancel → `/decision/action_request` pipeline.
+- Scripted state machine (scan → assess → branch → scan) with all four branches
+  exercised in a unit test (opponent→descore 14/18, ours→collect→score-mid-low 7/8,
+  empty→collect→score-long 3/5).
+- Goal assessment from perception (our vs opponent color counts in goal regions +
+  fullness thresholds).
+- Collect sourced from the route planner (`/perception/route_suggestion`), cm→inches,
+  zone-clamped; route planner node added to `integration_policy_test.launch.py`.
+- Left-half zone for the 24in robot: route planner `pickup_x_max_cm` (72 in) +
+  strategy `zone_x_max_in` clamp. Verified blocks >72 in are skipped.
+- Both alliances supported (alliance-aware ids + independent per-alliance points).
+- cm→inch unit conversion throughout. Everything builds; imports OK.
+
+**Missing / placeholders (NEED REAL VALUES or work):**
+- Field coordinates are placeholders: `scan_point_{blue,red}_json` and
+  `collect_fallback_{blue,red}_json` (inches), and `goal_regions_json` (cm). With
+  `goal_regions_json` empty, assessment falls back to *all detected blocks* — a rough
+  proxy, not true goal contents.
+- Mid/low goal ids defaulted (blue→7 MID_LEFT, red→8 MID_RIGHT) — confirm vs LOW (9/10).
+- Assessment thresholds (`goal_color_margin`, `goal_empty_max`, `goal_full_min`) are
+  guesses; tune against real detections.
+- **Not yet tested on the real robot** in scripted mode (off-robot logic only).
+- Depends on perception projection accuracy (`x_field_cm`/`y_field_cm`) and color
+  class names containing `blue`/`red`; not validated on the real field.
+- RL mode's `build_observation()` is still a placeholder (must match the sim obs
+  space) — irrelevant while we develop the scripted strategy.
+
+**Next steps (in order):**
+1. Fill real coordinates into `integration_policy_test.launch.py`: per-alliance scan
+   points (inches), `goal_regions_json` (cm rectangles for the goals to assess),
+   and confirm mid/low ids + the 72 in zone.
+2. Real-robot dry pass, scripted + confirm-each-action: launch, then for each step
+   watch `/policy/pending_action` and `ros2 topic echo /policy/status`
+   (`strategy_status.phase`, `last_assessment`) and `confirm`/`cancel` on
+   `/policy/decision`. Confirm the assessment matches the real field.
+3. Sanity-check the route planner: `ros2 topic echo /perception/route_suggestion`
+   and `/perception/route_status` — confirm it only suggests left-half blocks.
+4. Tune `goal_regions_json` + thresholds from observed detections; tune scan points.
+5. Once stable, try `require_confirmation:=false` for autonomous loops.
+
+**Key files:** `leroi_policy/strategies/{base,actions,scripted_strategy,rl_strategy}.py`,
+`leroi_policy/policy_node.py`, `leroi_perception/route_planner_node.py`,
+`leroi_bringup/launch/integration_policy_test.launch.py`.
+
+**Gotcha:** the scripted strategy advances one step per ACK (it only proposes when
+the decision node is idle), so on the real robot the V5 must ACK each action for the
+loop to progress; and the V5 firmware must implement the score/descore/collect
+behaviors for these action ids.
 
 Confirm or cancel the currently proposed action:
 

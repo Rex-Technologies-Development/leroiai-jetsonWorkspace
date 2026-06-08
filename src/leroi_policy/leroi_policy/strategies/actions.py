@@ -47,13 +47,18 @@ SCORE_ACTION_IDS = set(range(3, 11))     # 3..10
 DESCORE_ACTION_IDS = set(range(11, 19))  # 11..18
 
 # Sensible alliance-aware defaults for the scripted strategy. Tune to your field.
-DEFAULT_SCORE_BY_ALLIANCE = {
+DEFAULT_SCORE_LONG_BY_ALLIANCE = {
     "blue": 3,   # SCORE_LEFT_LONG_GOAL_ALLIANCE
     "red": 5,    # SCORE_RIGHT_LONG_GOAL_ALLIANCE
 }
+DEFAULT_SCORE_MIDLOW_BY_ALLIANCE = {
+    "blue": 7,   # SCORE_MID_LEFT   (placeholder; tune mid vs low per side)
+    "red": 8,    # SCORE_MID_RIGHT
+}
+# Wall-side descore (operator-selected).
 DEFAULT_DESCORE_BY_ALLIANCE = {
-    "blue": 13,  # DESCORE_LEFT_LONG_GOAL_OPPONENT_FIELD
-    "red": 17,   # DESCORE_RIGHT_LONG_GOAL_OPPONENT_FIELD
+    "blue": 14,  # DESCORE_LEFT_LONG_GOAL_OPPONENT_WALL
+    "red": 18,   # DESCORE_RIGHT_LONG_GOAL_OPPONENT_WALL
 }
 
 

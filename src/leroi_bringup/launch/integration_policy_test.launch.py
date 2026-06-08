@@ -135,6 +135,7 @@ def generate_launch_description():
                 # Inputs (game state)
                 "mapped_objects_topic": "/perception/oak_front/mapped_objects",
                 "detections_topic": "/perception/oak_front/detections",
+                "route_suggestion_topic": "/perception/route_suggestion",
                 "odom_topic": "/v5/odom",
                 "decision_status_topic": "/decision/status",
 
@@ -158,13 +159,27 @@ def generate_launch_description():
                 "action_id_map": "",
 
                 # Scripted strategy (defined game plan). 0 ids -> alliance default.
+                # Plan: scan near parking zone -> assess goals -> descore /
+                # collect+score-midlow / collect+score-long -> back to scan.
                 "alliance_color": LaunchConfiguration("alliance_color"),
-                "score_action_id": 0,
+                "score_long_action_id": 0,
+                "score_midlow_action_id": 0,
                 "descore_action_id": 0,
-                "scan_points_json": "",
-                "collect_fallback_points_json": "",
                 "max_collect_targets": 3,
-                "min_opponent_blocks_to_descore": 1,
+                # Alliance-specific positions (inches). TODO: set real field coords.
+                "scan_point_blue_json": "",
+                "scan_point_red_json": "",
+                "collect_fallback_blue_json": "",
+                "collect_fallback_red_json": "",
+                # Goal-state assessment (regions in field cm). TODO: set real goals.
+                "goal_regions_json": "",
+                "goal_color_margin": 1,
+                "goal_empty_max": 1,
+                "goal_full_min": 4,
+                # Collect routing + left-half zone for the 24in robot.
+                "use_route_planner_for_collect": True,
+                "zone_x_max_in": LaunchConfiguration("zone_x_max_in"),
+                "zone_x_wander_in": 12.0,
 
                 # Behavior
                 "inference_rate_hz": LaunchConfiguration("inference_rate_hz"),
@@ -172,6 +187,53 @@ def generate_launch_description():
                 "respect_decision_busy": True,
                 "max_blocks": 10,
                 "field_size_cm": 365.76,
+            }
+        ],
+    )
+
+    # Route planner: produces COLLECT_BLOCKS routes the scripted strategy consumes.
+    # pickup_x_max_cm keeps the 24in robot on the LEFT half (72in -> 182.88cm)
+    # so it does not impede the 15in robot on the right.
+    route_planner = Node(
+        package="leroi_perception",
+        executable="route_planner_node",
+        name="route_planner_node",
+        output="screen",
+        parameters=[
+            {
+                "alliance_color": LaunchConfiguration("alliance_color"),
+                "detections_topic": "/perception/oak_front/detections",
+                "odom_topic": "/v5/odom",
+                "route_suggestion_topic": "/perception/route_suggestion",
+                "route_status_topic": "/perception/route_status",
+                "route_rate_hz": 3.0,
+                "stale_detection_timeout_sec": 1.0,
+                "stale_odom_timeout_sec": 1.0,
+                "field_min_x_cm": 0.0,
+                "field_max_x_cm": 365.76,
+                "field_min_y_cm": 0.0,
+                "field_max_y_cm": 365.76,
+                # Left-half pickup zone for the 24in robot (cm).
+                "pickup_x_min_cm": 0.0,
+                "pickup_x_max_cm": LaunchConfiguration("pickup_x_max_cm"),
+                "max_route_points": 5,
+                "max_carry_blocks": 5,
+                "already_held_blocks": 0,
+                "min_confidence": 0.35,
+                "wall_margin_cm": 45.0,
+                "cluster_dist_cm": 90.0,
+                "cluster_pickup_dist_cm": 38.0,
+                "min_route_value": 0.015,
+                "skip_near_goals": True,
+                "center_goal_skip_radius_cm": 65.0,
+                "long_goal_y_min_cm": 115.0,
+                "long_goal_y_max_cm": 250.0,
+                "long_goal_x_margin_cm": 75.0,
+                "top_bottom_goal_x_min_cm": 120.0,
+                "top_bottom_goal_x_max_cm": 246.0,
+                "top_bottom_goal_y_margin_cm": 55.0,
+                "publish_empty_route": True,
+                "debug_log_routes": True,
             }
         ],
     )
@@ -187,6 +249,16 @@ def generate_launch_description():
                 "alliance_color",
                 default_value="blue",
                 description="Alliance for the scripted strategy: blue or red",
+            ),
+            DeclareLaunchArgument(
+                "zone_x_max_in",
+                default_value="72.0",
+                description="Soft left-half limit (inches) for the 24in robot's waypoints",
+            ),
+            DeclareLaunchArgument(
+                "pickup_x_max_cm",
+                default_value="182.88",  # 72 in
+                description="Route planner: max block-pickup x (cm); keeps 24in robot left",
             ),
             DeclareLaunchArgument(
                 "policy_model_path",
@@ -205,6 +277,7 @@ def generate_launch_description():
             ),
             serial_messenger,
             perception,
+            route_planner,
             decision,
             policy,
         ]

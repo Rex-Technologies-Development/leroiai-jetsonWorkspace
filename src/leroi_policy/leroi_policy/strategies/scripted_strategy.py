@@ -1,15 +1,23 @@
 """Scripted ("defined") strategy: a fixed, repeatable game plan, no learning.
 
-The default plan loops:
+Plan (per the defined strategy):
 
-    COLLECT_BLOCKS  ->  SCORE (alliance long goal)  ->  MOVE out to scan
-        ->  if opponent blocks are visible:  DESCORE  ->  back to COLLECT
-        ->  else:                            back to COLLECT
+    1. Move to a SCAN position near our parking zone and look at the goals.
+    2. ASSESS the goal state from perception (our-color vs opponent-color blocks
+       in the goal regions, plus how full they are) and branch:
+         - mostly OPPONENT colors        -> DESCORE
+         - mainly OUR colors             -> COLLECT more, then SCORE mid/low
+         - neutral & ~empty              -> COLLECT more, then SCORE long goal
+         - neutral & ~full               -> DESCORE
+    3. After the descore/score finishes, return to the SCAN position.
+    4. Repeat.
 
 Every phase emits one action; the policy node only calls :meth:`propose` once the
 previous action has been ACKed (decision node idle), so the machine advances one
-step per completed action. All waypoints/ids are configurable — the defaults are
-placeholders to tune against the real field.
+step per completed action. Field-specific values (scan position, goal regions,
+goal/score ids, thresholds) are all parameters — defaults are placeholders to
+tune against the real field. Both alliances are supported; positions are supplied
+independently per alliance.
 """
 
 import json
@@ -19,7 +27,8 @@ from typing import Any, Dict, List, Optional
 from .actions import (
     COLLECT_BLOCKS,
     DEFAULT_DESCORE_BY_ALLIANCE,
-    DEFAULT_SCORE_BY_ALLIANCE,
+    DEFAULT_SCORE_LONG_BY_ALLIANCE,
+    DEFAULT_SCORE_MIDLOW_BY_ALLIANCE,
     MOVE_CHASSIS_ONLY,
     action_name,
 )
@@ -27,10 +36,17 @@ from .base import ActionProposal, GameState, Strategy
 
 
 class Phase:
-    COLLECT = "collect"
-    SCORE = "score"
-    SCAN = "scan"
-    EVALUATE = "evaluate"  # branch point: descore vs. collect again
+    SCAN = "scan"            # move to the scan position near the parking zone
+    ASSESS = "assess"        # branch on goal state (emits the chosen action)
+    SCORE_MIDLOW = "score_midlow"
+    SCORE_LONG = "score_long"
+
+
+# Goal-state classifications.
+MOSTLY_OPPONENT = "mostly_opponent"
+MAINLY_OURS = "mainly_ours"
+NEUTRAL_EMPTY = "neutral_empty"
+NEUTRAL_FULL = "neutral_full"
 
 
 class ScriptedStrategy(Strategy):
@@ -42,32 +58,63 @@ class ScriptedStrategy(Strategy):
         self.alliance = str(cfg.get("alliance_color", "blue")).strip().lower()
         self.opponent_color = "red" if self.alliance == "blue" else "blue"
 
-        self.score_action_id = int(
-            cfg.get("score_action_id", DEFAULT_SCORE_BY_ALLIANCE.get(self.alliance, 3))
+        self.score_long_action_id = self._id(
+            cfg.get("score_long_action_id", 0),
+            DEFAULT_SCORE_LONG_BY_ALLIANCE.get(self.alliance, 3),
         )
-        self.descore_action_id = int(
-            cfg.get("descore_action_id", DEFAULT_DESCORE_BY_ALLIANCE.get(self.alliance, 13))
+        self.score_midlow_action_id = self._id(
+            cfg.get("score_midlow_action_id", 0),
+            DEFAULT_SCORE_MIDLOW_BY_ALLIANCE.get(self.alliance, 7),
+        )
+        self.descore_action_id = self._id(
+            cfg.get("descore_action_id", 0),
+            DEFAULT_DESCORE_BY_ALLIANCE.get(self.alliance, 14),
         )
 
-        # Waypoints (field cm). JSON arrays of {x,y,heading} (or [x,y,heading]).
-        self.scan_points = self._parse_points(
-            cfg.get("scan_points_json", ""),
-            default=[{"x": 182.0, "y": 182.0, "heading": 0.0}],
-        )
-        self.collect_fallback_points = self._parse_points(
-            cfg.get("collect_fallback_points_json", ""),
-            default=[{"x": 120.0, "y": 90.0, "heading": 0.0}],
-        )
+        # Alliance-specific positions (robot units = inches). Each alliance has
+        # its own scan spot near its parking zone and its own fallback waypoints.
+        self.scan_points = self._alliance_points(cfg, "scan_point", default=[
+            {"x": 24.0, "y": 24.0, "heading": 45.0},
+        ])
+        self.collect_fallback_points = self._alliance_points(cfg, "collect_fallback", default=[
+            {"x": 48.0, "y": 48.0, "heading": 0.0},
+        ])
 
         self.max_collect_targets = int(cfg.get("max_collect_targets", 3))
-        self.min_opponent_blocks_to_descore = int(cfg.get("min_opponent_blocks_to_descore", 1))
 
-        self._phase = Phase.COLLECT
+        # Goal regions (perception field cm) to assess. Each is a rectangle:
+        # {"name","x_min","x_max","y_min","y_max"}. Empty -> assess ALL detected
+        # blocks on the field (a rough proxy until goal regions are calibrated).
+        self.goal_regions = self._parse_regions(cfg.get("goal_regions_json", ""))
+
+        # Classification thresholds (counts of color blocks within goal regions).
+        self.goal_color_margin = int(cfg.get("goal_color_margin", 1))  # |ours-opp| >= -> dominant
+        self.goal_empty_max = int(cfg.get("goal_empty_max", 1))        # total <= -> "empty"
+        self.goal_full_min = int(cfg.get("goal_full_min", 4))          # total >= -> "full"
+
+        # Perception cm -> robot inches for collect waypoints / distance sorting.
+        self.perception_to_robot_scale = float(cfg.get("perception_to_robot_scale", 1.0 / 2.54))
+
+        # Keep this robot in its zone (robot units = inches). For the 24in robot
+        # we stay on the LEFT half: soft target x <= zone_x_max_in, with a little
+        # wander allowed up to zone_x_max_in + zone_x_wander_in. Waypoints beyond
+        # the hard limit are clamped. 0 max -> no zone limit.
+        self.zone_x_max_in = float(cfg.get("zone_x_max_in", 0.0))
+        self.zone_x_wander_in = float(cfg.get("zone_x_wander_in", 12.0))
+
+        # Prefer the route planner's COLLECT route (it already clusters, applies
+        # wall margins, skips goals, and respects the pickup zone) over deriving
+        # collect targets from raw blocks here.
+        self.use_route_planner_for_collect = bool(cfg.get("use_route_planner_for_collect", True))
+
+        self._phase = Phase.SCAN
         self._loops = 0
+        self._last_assessment: Optional[str] = None
 
     def reset(self) -> None:
-        self._phase = Phase.COLLECT
+        self._phase = Phase.SCAN
         self._loops = 0
+        self._last_assessment = None
 
     def status(self) -> Dict[str, Any]:
         return {
@@ -75,7 +122,9 @@ class ScriptedStrategy(Strategy):
             "phase": self._phase,
             "alliance": self.alliance,
             "loops_completed": self._loops,
-            "score_action_id": self.score_action_id,
+            "last_assessment": self._last_assessment,
+            "score_long_action_id": self.score_long_action_id,
+            "score_midlow_action_id": self.score_midlow_action_id,
             "descore_action_id": self.descore_action_id,
         }
 
@@ -85,57 +134,120 @@ class ScriptedStrategy(Strategy):
     def propose(self, state: GameState) -> Optional[ActionProposal]:
         phase = self._phase
 
-        if phase == Phase.COLLECT:
-            self._phase = Phase.SCORE
-            return self._collect(state)
-
-        if phase == Phase.SCORE:
-            self._phase = Phase.SCAN
-            return ActionProposal(
-                action_id=self.score_action_id,
-                action_name=action_name(self.score_action_id),
-                points=[],
-                params={"source": "scripted"},
-                source="scripted:score",
-            )
-
         if phase == Phase.SCAN:
-            self._phase = Phase.EVALUATE
+            self._phase = Phase.ASSESS
             return ActionProposal(
                 action_id=MOVE_CHASSIS_ONLY,
                 action_name=action_name(MOVE_CHASSIS_ONLY),
-                points=[dict(p) for p in self.scan_points],
+                points=self._clamp_zone([dict(p) for p in self.scan_points]),
                 params={"source": "scripted", "intent": "scan"},
                 source="scripted:scan",
             )
 
-        if phase == Phase.EVALUATE:
-            # Decided against perception captured *after* the scan move finished.
-            opp = self._opponent_blocks(state)
-            if len(opp) >= self.min_opponent_blocks_to_descore:
-                self._phase = Phase.COLLECT  # resume loop after descoring
-                self._loops += 1
-                return ActionProposal(
-                    action_id=self.descore_action_id,
-                    action_name=action_name(self.descore_action_id),
-                    points=[],
-                    params={"source": "scripted"},
-                    source="scripted:descore",
-                    info={"opponent_blocks_seen": len(opp)},
-                )
-            # No opponent blocks -> grab more and score again.
-            self._phase = Phase.SCORE
-            self._loops += 1
-            return self._collect(state)
+        if phase == Phase.ASSESS:
+            return self._assess_and_branch(state)
 
-        # Unknown phase: re-home.
-        self._phase = Phase.COLLECT
+        if phase == Phase.SCORE_MIDLOW:
+            self._phase = Phase.SCAN
+            self._loops += 1
+            return ActionProposal(
+                action_id=self.score_midlow_action_id,
+                action_name=action_name(self.score_midlow_action_id),
+                points=[],
+                params={"source": "scripted"},
+                source="scripted:score_midlow",
+            )
+
+        if phase == Phase.SCORE_LONG:
+            self._phase = Phase.SCAN
+            self._loops += 1
+            return ActionProposal(
+                action_id=self.score_long_action_id,
+                action_name=action_name(self.score_long_action_id),
+                points=[],
+                params={"source": "scripted"},
+                source="scripted:score_long",
+            )
+
+        # Unknown phase: re-home to scan.
+        self._phase = Phase.SCAN
         return None
 
+    def _assess_and_branch(self, state: GameState) -> ActionProposal:
+        """Decide the next action from the goal state captured after the scan."""
+        classification, counts = self.assess_goals(state)
+        self._last_assessment = classification
+
+        if classification in (MOSTLY_OPPONENT, NEUTRAL_FULL):
+            # Go remove opponent blocks; then back to scan.
+            self._phase = Phase.SCAN
+            self._loops += 1
+            return ActionProposal(
+                action_id=self.descore_action_id,
+                action_name=action_name(self.descore_action_id),
+                points=[],
+                params={"source": "scripted"},
+                source="scripted:descore",
+                info={"assessment": classification, **counts},
+            )
+
+        # Otherwise collect more first; the follow-up score depends on the state.
+        if classification == MAINLY_OURS:
+            self._phase = Phase.SCORE_MIDLOW
+        else:  # NEUTRAL_EMPTY (and any fallthrough)
+            self._phase = Phase.SCORE_LONG
+
+        return self._collect(state, classification, counts)
+
     # ------------------------------------------------------------------ #
-    # Helpers
+    # Goal-state assessment
     # ------------------------------------------------------------------ #
-    def _collect(self, state: GameState) -> ActionProposal:
+    def assess_goals(self, state: GameState):
+        """Classify the goals from perception.
+
+        Counts our-color vs opponent-color blocks that fall inside the configured
+        goal regions (or all detected blocks if no regions are set). Returns
+        (classification, counts_dict).
+        """
+        ours = opp = 0
+        for b in state.blocks:
+            if not self._in_goal_regions(b):
+                continue
+            name = str(b.get("class_name", "")).lower()
+            if self.alliance in name:
+                ours += 1
+            elif self.opponent_color in name:
+                opp += 1
+
+        total = ours + opp
+        counts = {"ours_in_goals": ours, "opp_in_goals": opp, "total_in_goals": total}
+
+        if opp - ours >= self.goal_color_margin:
+            return MOSTLY_OPPONENT, counts
+        if ours - opp >= self.goal_color_margin:
+            return MAINLY_OURS, counts
+        # Roughly balanced -> decide by fullness.
+        if total >= self.goal_full_min:
+            return NEUTRAL_FULL, counts
+        return NEUTRAL_EMPTY, counts
+
+    def _in_goal_regions(self, block: Dict[str, Any]) -> bool:
+        if not self.goal_regions:
+            return True  # no regions configured -> assess everything seen
+        try:
+            x = float(block.get("x", 0.0))
+            y = float(block.get("y", 0.0))
+        except (TypeError, ValueError):
+            return False
+        for r in self.goal_regions:
+            if r["x_min"] <= x <= r["x_max"] and r["y_min"] <= y <= r["y_max"]:
+                return True
+        return False
+
+    # ------------------------------------------------------------------ #
+    # Collect helpers
+    # ------------------------------------------------------------------ #
+    def _collect(self, state: GameState, classification: str, counts: Dict[str, Any]) -> ActionProposal:
         points = self._collect_targets(state)
         return ActionProposal(
             action_id=COLLECT_BLOCKS,
@@ -143,10 +255,16 @@ class ScriptedStrategy(Strategy):
             points=points,
             params={"source": "scripted"},
             source="scripted:collect",
-            info={"used_fallback": not self._collectible_blocks(state)},
+            info={"assessment": classification, "used_fallback": not self._collectible_blocks(state), **counts},
         )
 
     def _collect_targets(self, state: GameState) -> List[Dict[str, float]]:
+        # 1) Prefer the route planner's suggestion (already alliance/zone-aware).
+        route_pts = self._route_suggestion_points(state)
+        if route_pts:
+            return self._clamp_zone(route_pts[: self.max_collect_targets])
+
+        # 2) Else derive from raw detected blocks, nearest first.
         blocks = self._collectible_blocks(state)
         if state.robot_xy and blocks:
             rx, ry = state.robot_xy
@@ -154,22 +272,68 @@ class ScriptedStrategy(Strategy):
         points: List[Dict[str, float]] = []
         for b in blocks[: self.max_collect_targets]:
             points.append({"x": b["x"], "y": b["y"], "heading": self._heading_toward(state, b)})
+
+        # 3) Else fixed fallback waypoints (already in robot units).
         if not points:
             points = [dict(p) for p in self.collect_fallback_points]
-        return points
+        return self._clamp_zone(points)
 
-    def _collectible_blocks(self, state: GameState) -> List[Dict[str, Any]]:
-        """Blocks we should pick up: anything that is not an opponent block."""
-        out = []
-        for b in state.blocks:
-            if self.opponent_color in b.get("class_name", "").lower():
+    def _route_suggestion_points(self, state: GameState) -> List[Dict[str, float]]:
+        """Points from the latest route planner suggestion, converted cm->inches."""
+        if not self.use_route_planner_for_collect or not state.route_suggestion:
+            return []
+        raw = state.route_suggestion.get("points") or []
+        s = self.perception_to_robot_scale
+        out: List[Dict[str, float]] = []
+        for p in raw:
+            try:
+                out.append(
+                    {
+                        "x": float(p["x"]) * s,
+                        "y": float(p["y"]) * s,
+                        "heading": float(p.get("heading", 0.0)),
+                    }
+                )
+            except (KeyError, TypeError, ValueError):
                 continue
-            out.append(dict(b))
         return out
 
-    def _opponent_blocks(self, state: GameState) -> List[Dict[str, Any]]:
+    def _clamp_zone(self, points: List[Dict[str, float]]) -> List[Dict[str, float]]:
+        """Clamp waypoint x to the robot's zone (no-op if zone_x_max_in <= 0)."""
+        if self.zone_x_max_in <= 0:
+            return points
+        hard_max = self.zone_x_max_in + self.zone_x_wander_in
+        clamped = []
+        for p in points:
+            q = dict(p)
+            if q["x"] > hard_max:
+                q["x"] = hard_max
+            clamped.append(q)
+        return clamped
+
+    def _blocks_robot_frame(self, state: GameState) -> List[Dict[str, Any]]:
+        """Blocks with positions converted from perception cm to robot inches."""
+        s = self.perception_to_robot_scale
+        out = []
+        for b in state.blocks:
+            try:
+                out.append(
+                    {
+                        "class_name": str(b.get("class_name", "")),
+                        "x": float(b.get("x", 0.0)) * s,
+                        "y": float(b.get("y", 0.0)) * s,
+                    }
+                )
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def _collectible_blocks(self, state: GameState) -> List[Dict[str, Any]]:
+        """Blocks we should pick up (robot units): anything not an opponent block."""
         return [
-            b for b in state.blocks if self.opponent_color in b.get("class_name", "").lower()
+            b
+            for b in self._blocks_robot_frame(state)
+            if self.opponent_color not in b["class_name"].lower()
         ]
 
     def _heading_toward(self, state: GameState, block: Dict[str, float]) -> float:
@@ -177,6 +341,18 @@ class ScriptedStrategy(Strategy):
             return 0.0
         rx, ry = state.robot_xy
         return math.degrees(math.atan2(block["y"] - ry, block["x"] - rx))
+
+    # ------------------------------------------------------------------ #
+    # Param parsing
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _id(value: Any, default: int) -> int:
+        v = int(value)
+        return v if v > 0 else int(default)
+
+    def _alliance_points(self, cfg: Dict[str, Any], key: str, default: List[Dict[str, float]]):
+        """Pick the alliance-specific `<key>_<alliance>_json`, else the default."""
+        return self._parse_points(cfg.get(f"{key}_{self.alliance}_json", ""), default=default)
 
     def _parse_points(self, raw: Any, default: List[Dict[str, float]]) -> List[Dict[str, float]]:
         text = str(raw or "").strip()
@@ -201,3 +377,28 @@ class ScriptedStrategy(Strategy):
             except (KeyError, IndexError, ValueError, TypeError):
                 continue
         return out or [dict(p) for p in default]
+
+    def _parse_regions(self, raw: Any) -> List[Dict[str, float]]:
+        text = str(raw or "").strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            self.log.warning(f"Invalid goal_regions JSON '{text}'; assessing all blocks.")
+            return []
+        out: List[Dict[str, float]] = []
+        for r in parsed if isinstance(parsed, list) else []:
+            try:
+                out.append(
+                    {
+                        "name": str(r.get("name", f"goal{len(out)}")),
+                        "x_min": float(r["x_min"]),
+                        "x_max": float(r["x_max"]),
+                        "y_min": float(r["y_min"]),
+                        "y_max": float(r["y_max"]),
+                    }
+                )
+            except (KeyError, ValueError, TypeError):
+                self.log.warning(f"Skipping invalid goal region: {r}")
+        return out
