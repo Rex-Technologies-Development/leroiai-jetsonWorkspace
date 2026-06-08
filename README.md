@@ -331,6 +331,11 @@ Notes:
 
 ## Roadmap / WIP
 
+- **Path planner goal-collision check before scoring (ROS side):** for each `score` action
+  (action_id 3–10), run a path checker first. Check whether the current path to the scoring
+  pose will intersect with any goals; if it does, first send a `MOVE_CHASSIS_ONLY` (command 1)
+  to reposition the robot to a point where the path is clear, then send the score command
+  (command 3–10).
 - Rebuild ONNX model and TensorRT engine at `imgsz=640` (TODO: export ONNX at 640 and rebuild engine for higher accuracy).
 - Replace `leroi_perception` fake detections with OAK + YOLO pipeline outputs.
 - Define real custom messages/services in `leroi_interfaces` (instead of JSON `std_msgs/String`).

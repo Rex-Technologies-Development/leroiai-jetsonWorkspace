@@ -18,31 +18,29 @@ FIELD_MAP_PATH = os.path.expanduser(
 
 # Command scenario the test driver walks through, one ACK at a time.
 #
-#   1) MOVE_CHASSIS_ONLY (action_id 1) -> first target point.
-#   2) MOVE_CHASSIS_ONLY (action_id 1) -> second target point.
-#   3) COLLECT_BLOCKS    (action_id 2) -> a bunch of target points.
+#   1) MOVE_CHASSIS_ONLY (action_id 1) -> drive through both waypoints.
 #
-# Field is 365.76 cm x 365.76 cm, origin bottom-left. Edit freely.
+# Units are INCHES (the VEX side expects inches; the Jetson pipeline passes
+# x/y/heading through unchanged). Heading is in degrees. Edit freely.
 TEST_SEQUENCE = [
     {
+        # MOVE_CHASSIS_ONLY: drive through 3 waypoints, ending back at origin facing 0.
         "action_id": 1,
-        "points": [{"x": 120.0, "y": 90.0, "heading": 0.0}],
-        "params": {"label": "move_to_point_1"},
+        "points": [
+            {"x": 30.0, "y": 30.0, "heading": 90.0},
+            {"x": 15.0, "y": 15.0, "heading": 45.0},
+            {"x": 0.0, "y": 0.0, "heading": 0.0},
+        ],
+        "params": {"label": "return_to_origin_3pts"},
     },
     {
-        "action_id": 1,
-        "points": [{"x": 240.0, "y": 180.0, "heading": 90.0}],
-        "params": {"label": "move_to_point_2"},
-    },
-    {
+        # COLLECT_BLOCKS: prime intake and drive to the block waypoints.
         "action_id": 2,
         "points": [
-            {"x": 250.0, "y": 200.0, "heading": 90.0},
-            {"x": 270.0, "y": 220.0, "heading": 45.0},
-            {"x": 290.0, "y": 240.0, "heading": 0.0},
-            {"x": 300.0, "y": 260.0, "heading": -45.0},
+            {"x": 20.0, "y": 25.0, "heading": 20.0},
+            {"x": 20.0, "y": 40.0, "heading": 0.0},
         ],
-        "params": {"label": "collect_blocks_run"},
+        "params": {"label": "collect_blocks_2pts"},
     },
 ]
 
@@ -72,8 +70,8 @@ def generate_launch_description():
                 "status_period_sec": 2.0,
 
                 # Debugging
-                "debug_log_rx": False,
-                "debug_log_tx": False,
+                "debug_log_rx": True,
+                "debug_log_tx": True,
                 "debug_log_scan": True,
 
                 # Perception detections can be forwarded to V5 later.
