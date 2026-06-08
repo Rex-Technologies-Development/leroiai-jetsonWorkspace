@@ -101,6 +101,14 @@ class PerceptionNode(Node):
 
         self.declare_parameter("robot_trail_max_points", 500)
         self.declare_parameter("object_history_sec", 3.0)
+        # Track each block as one running-averaged position instead of a trail
+        # of per-frame projections (which look like "shadows" on the map).
+        # A detection whose bounding-box CENTER is within this many pixels of an
+        # existing tracked block (same class) is treated as the same block and
+        # averaged in. Matching in pixel space keeps two distinct blocks separate
+        # even when noisy depth places them at nearly the same field position.
+        self.declare_parameter("object_merge_dist_px", 45.0)
+        self.declare_parameter("object_smooth_alpha", 0.25)
 
         # Since decision now publishes approved path/action commands to /robot/command
         self.declare_parameter("target_path_topic", "/robot/command")
@@ -111,6 +119,19 @@ class PerceptionNode(Node):
         self.declare_parameter("camera_offset_x_cm", 0.0)
         self.declare_parameter("camera_offset_y_cm", 15.0)
         self.declare_parameter("camera_offset_z_cm", 25.0)
+
+        # Downward pitch of the camera in degrees (0 = looking straight ahead).
+        # Used to rotate the optical-axis depth into a horizontal ground distance.
+        self.declare_parameter("camera_tilt_deg", 19.0)
+
+        # When no valid odom is available, assume the robot is sitting at this
+        # field pose so detections are still projected to field coordinates.
+        # NOT (0,0): that is the field corner, where balls to the side project
+        # out of bounds and get filtered. Default to bottom-center facing +Y.
+        self.declare_parameter("assume_origin_when_no_odom", True)
+        self.declare_parameter("assumed_start_x_cm", 182.88)
+        self.declare_parameter("assumed_start_y_cm", 30.0)
+        self.declare_parameter("assumed_start_heading_deg", 0.0)
 
         # Goal view stays disabled for now.
         self.declare_parameter("enable_goal_view", False)
@@ -183,6 +204,12 @@ class PerceptionNode(Node):
             self.get_parameter("robot_trail_max_points").value
         )
         self.object_history_sec = float(self.get_parameter("object_history_sec").value)
+        self.object_merge_dist_px = float(
+            self.get_parameter("object_merge_dist_px").value
+        )
+        self.object_smooth_alpha = float(
+            self.get_parameter("object_smooth_alpha").value
+        )
 
         self.target_path_topic = str(self.get_parameter("target_path_topic").value)
         self.action_ack_topic = str(self.get_parameter("action_ack_topic").value)
@@ -195,6 +222,21 @@ class PerceptionNode(Node):
         )
         self.camera_offset_z_cm = float(
             self.get_parameter("camera_offset_z_cm").value
+        )
+        self.camera_tilt_deg = float(
+            self.get_parameter("camera_tilt_deg").value
+        )
+        self.assume_origin_when_no_odom = bool(
+            self.get_parameter("assume_origin_when_no_odom").value
+        )
+        self.assumed_start_x_cm = float(
+            self.get_parameter("assumed_start_x_cm").value
+        )
+        self.assumed_start_y_cm = float(
+            self.get_parameter("assumed_start_y_cm").value
+        )
+        self.assumed_start_heading_deg = float(
+            self.get_parameter("assumed_start_heading_deg").value
         )
 
         self.enable_goal_view = bool(self.get_parameter("enable_goal_view").value)
@@ -257,14 +299,22 @@ class PerceptionNode(Node):
             10,
         )
 
+        self.route_sub = self.create_subscription(
+            String,
+            "/perception/route_suggestion",
+            self.route_suggestion_callback,
+            10,
+        )
+
         # ---------------------------------------------------------------------
         # Shared state
         # ---------------------------------------------------------------------
 
         self.robot_pose_lock = threading.Lock()
-        self.robot_x = 0.0
-        self.robot_y = 0.0
-        self.robot_heading_deg = 0.0
+        # Seed with the assumed start pose; overwritten once real odom arrives.
+        self.robot_x = self.assumed_start_x_cm
+        self.robot_y = self.assumed_start_y_cm
+        self.robot_heading_deg = self.assumed_start_heading_deg
         self.has_robot_pose = False
         self.last_odom_stamp_ns = 0
         self.robot_trail: List[Tuple[float, float, float, float]] = []
@@ -277,6 +327,11 @@ class PerceptionNode(Node):
         self.latest_path_command_id = None
         self.latest_path_action_id = None
         self.latest_path_action_name = None
+
+        self.route_lock = threading.Lock()
+        self.route_points: List[Dict[str, float]] = []
+        self.route_reason = ""
+        self.route_candidate_count = 0
 
         self.action_ack_lock = threading.Lock()
         self.latest_action_ack: Optional[Dict[str, Any]] = None
@@ -552,6 +607,36 @@ class PerceptionNode(Node):
             self.latest_path_action_id = data.get("action_id")
             self.latest_path_action_name = data.get("action_name")
 
+    def route_suggestion_callback(self, msg: String):
+        """Store the route planner's suggested collection waypoints for display."""
+        try:
+            data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+
+        if not isinstance(data, dict):
+            return
+
+        points = data.get("points", [])
+        if not isinstance(points, list):
+            points = []
+
+        normalized = []
+        for point in points:
+            try:
+                x = float(point["x"])
+                y = float(point["y"])
+                heading = float(point.get("heading", 0.0))
+                if math.isfinite(x) and math.isfinite(y) and math.isfinite(heading):
+                    normalized.append({"x": x, "y": y, "heading": heading})
+            except (KeyError, ValueError, TypeError):
+                continue
+
+        with self.route_lock:
+            self.route_points = normalized
+            self.route_reason = str(data.get("reason", ""))
+            self.route_candidate_count = int(data.get("candidate_count", 0) or 0)
+
     def action_ack_callback(self, msg: String):
         try:
             data = json.loads(msg.data)
@@ -652,9 +737,13 @@ class PerceptionNode(Node):
 
             enriched_detections = []
 
+            # When odom is absent we project from the assumed origin, so the pose
+            # we ship is usable by downstream consumers (e.g. the route planner).
+            pose_usable = has_robot_pose or self.assume_origin_when_no_odom
+
             packet = {
                 "t": stamp_now.nanoseconds,
-                "robot_pose_valid": has_robot_pose,
+                "robot_pose_valid": pose_usable,
                 "robot_x": robot_x,
                 "robot_y": robot_y,
                 "robot_heading_deg": robot_heading_deg,
@@ -664,7 +753,9 @@ class PerceptionNode(Node):
             for det in detections:
                 d = dict(det)
 
-                if has_robot_pose:
+                if has_robot_pose or self.assume_origin_when_no_odom:
+                    # robot_x/y/heading default to the origin (0, 0, 0), so when
+                    # odom is absent this projects relative to the assumed start.
                     self.project_detection_to_field(
                         detection=d,
                         robot_x=robot_x,
@@ -743,11 +834,17 @@ class PerceptionNode(Node):
         """
         Convert camera-relative object coordinates to field coordinates.
 
-        yolo_detector.detect_3d gives:
+        yolo_detector.detect_3d gives the object in the (tilted) camera frame:
           x_cm = object right of camera
-          z_cm = object forward from camera
+          y_cm = object below the optical axis (image-down is positive)
+          z_cm = object forward along the optical axis
 
-        We include camera offset relative to robot center, then rotate by robot heading.
+        The camera is pitched down by camera_tilt_deg, so the optical-axis depth
+        is NOT the horizontal ground distance. We rotate the (y, z) pair by the
+        tilt to recover the horizontal forward distance:
+          forward_horizontal = z*cos(tilt) - y*sin(tilt)
+        Lateral (x) is unaffected by a pure downward pitch. We then add the
+        camera offset relative to robot center and rotate by robot heading.
 
         Robot heading convention:
           0 deg = facing +Y on field.
@@ -762,14 +859,26 @@ class PerceptionNode(Node):
             x_cam = float(x_cm)
             z_cam = float(z_cm)
 
-            if not (math.isfinite(x_cam) and math.isfinite(z_cam)):
+            y_cm = detection.get("y_cm")
+            y_cam = float(y_cm) if y_cm is not None else 0.0
+
+            if not (
+                math.isfinite(x_cam)
+                and math.isfinite(z_cam)
+                and math.isfinite(y_cam)
+            ):
                 return
 
         except (ValueError, TypeError):
             return
 
+        # Rotate out the camera's downward pitch to get the horizontal forward
+        # distance on the ground plane.
+        tilt_rad = math.radians(self.camera_tilt_deg)
+        forward_horizontal_cm = z_cam * math.cos(tilt_rad) - y_cam * math.sin(tilt_rad)
+
         local_right_cm = self.camera_offset_x_cm + x_cam
-        local_forward_cm = self.camera_offset_y_cm + z_cam
+        local_forward_cm = self.camera_offset_y_cm + forward_horizontal_cm
 
         heading_rad = math.radians(robot_heading_deg)
 
@@ -873,20 +982,67 @@ class PerceptionNode(Node):
                 if not self.in_field_bounds(x_field, y_field):
                     continue
 
+                class_name = str(d.get("class_name", "?"))
                 x_cm = d.get("x_cm")
                 z_cm = d.get("z_cm")
+                conf = float(d.get("confidence", 0.0))
+                bcx = d.get("bbox_center_x")
+                bcy = d.get("bbox_center_y")
+                if bcx is None or bcy is None:
+                    continue
+                bcx = float(bcx)
+                bcy = float(bcy)
 
-                self.object_history.append(
-                    {
-                        "time": now,
-                        "class_name": str(d.get("class_name", "?")),
-                        "confidence": float(d.get("confidence", 0.0)),
-                        "x_cm": float(x_cm) if x_cm is not None else None,
-                        "z_cm": float(z_cm) if z_cm is not None else None,
-                        "x_field_cm": x_field,
-                        "y_field_cm": y_field,
-                    }
-                )
+                # Match by bounding-box CENTER in pixel space: the same block
+                # holds a steady pixel position (only its depth jitters), while
+                # two distinct blocks sit at distinct pixels even if noisy depth
+                # overlaps their field positions. So average into the existing
+                # track at the nearest pixel; otherwise start a new one.
+                best = None
+                best_dist = self.object_merge_dist_px
+                for obj in self.object_history:
+                    if obj["class_name"] != class_name:
+                        continue
+                    if obj.get("bbox_center_x") is None:
+                        continue
+                    dpx = math.hypot(
+                        obj["bbox_center_x"] - bcx,
+                        obj["bbox_center_y"] - bcy,
+                    )
+                    if dpx < best_dist:
+                        best_dist = dpx
+                        best = obj
+
+                a = self.object_smooth_alpha
+                if best is not None:
+                    best["x_field_cm"] += a * (x_field - best["x_field_cm"])
+                    best["y_field_cm"] += a * (y_field - best["y_field_cm"])
+                    best["bbox_center_x"] += a * (bcx - best["bbox_center_x"])
+                    best["bbox_center_y"] += a * (bcy - best["bbox_center_y"])
+                    if x_cm is not None:
+                        bx = best.get("x_cm")
+                        best["x_cm"] = float(x_cm) if bx is None else bx + a * (float(x_cm) - bx)
+                    if z_cm is not None:
+                        bz = best.get("z_cm")
+                        best["z_cm"] = float(z_cm) if bz is None else bz + a * (float(z_cm) - bz)
+                    best["confidence"] = conf
+                    best["time"] = now
+                    best["count"] = best.get("count", 1) + 1
+                else:
+                    self.object_history.append(
+                        {
+                            "time": now,
+                            "class_name": class_name,
+                            "confidence": conf,
+                            "x_cm": float(x_cm) if x_cm is not None else None,
+                            "z_cm": float(z_cm) if z_cm is not None else None,
+                            "x_field_cm": x_field,
+                            "y_field_cm": y_field,
+                            "bbox_center_x": bcx,
+                            "bbox_center_y": bcy,
+                            "count": 1,
+                        }
+                    )
 
             cutoff = now - self.object_history_sec
             self.object_history = [
@@ -1065,6 +1221,11 @@ class PerceptionNode(Node):
         with self.action_ack_lock:
             latest_ack = dict(self.latest_action_ack) if self.latest_action_ack else None
 
+        with self.route_lock:
+            route_points = list(self.route_points)
+            route_reason = self.route_reason
+            route_candidate_count = self.route_candidate_count
+
         # Draw target path
         if target_path:
             path_points_px = []
@@ -1147,6 +1308,31 @@ class PerceptionNode(Node):
                 1,
             )
 
+        # Draw route planner suggestion (collection waypoints + path)
+        if route_points:
+            route_color = (0, 215, 255)  # amber
+            start_px = self.world_to_map_px(robot_x, robot_y)
+            chain_px = [start_px] + [
+                self.world_to_map_px(p["x"], p["y"]) for p in route_points
+            ]
+
+            for a, b in zip(chain_px[:-1], chain_px[1:]):
+                cv2.line(img, a, b, route_color, 2)
+
+            for idx, p in enumerate(route_points):
+                wp_px = self.world_to_map_px(p["x"], p["y"])
+                cv2.circle(img, wp_px, 9, route_color, 2)
+                cv2.circle(img, wp_px, 3, route_color, -1)
+                cv2.putText(
+                    img,
+                    str(idx + 1),
+                    (wp_px[0] + 11, wp_px[1] + 4),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    route_color,
+                    2,
+                )
+
         # Draw robot pose
         if has_robot_pose:
             robot_px = self.world_to_map_px(robot_x, robot_y)
@@ -1175,7 +1361,7 @@ class PerceptionNode(Node):
             cv2.circle(img, robot_px, 4, (0, 0, 255), -1)
 
         # HUD background
-        cv2.rectangle(img, (0, 0), (w, 108), (10, 10, 10), -1)
+        cv2.rectangle(img, (0, 0), (w, 130), (10, 10, 10), -1)
 
         cv2.putText(
             img,
@@ -1227,6 +1413,23 @@ class PerceptionNode(Node):
             cv2.FONT_HERSHEY_SIMPLEX,
             0.46,
             (0, 255, 0),
+            1,
+        )
+
+        if route_points:
+            route_text = (
+                f"Route: {len(route_points)} stop(s) from "
+                f"{route_candidate_count} block(s)"
+            )
+        else:
+            route_text = f"Route: none ({route_reason or 'waiting'})"
+        cv2.putText(
+            img,
+            route_text[:90],
+            (12, 116),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.46,
+            (0, 215, 255),
             1,
         )
 

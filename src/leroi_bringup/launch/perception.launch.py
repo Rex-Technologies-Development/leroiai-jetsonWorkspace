@@ -23,6 +23,14 @@ def generate_launch_description():
                 "oak_mxid": "",
                 "oak_with_depth": True,
 
+                "camera_offset_x_cm": -0.635,  # camera mounted 0.25in left of robot center
+                "camera_offset_y_cm": 15.0,    # camera 15cm forward of robot center
+                "camera_offset_z_cm": 34.93,   # lens 13 3/4in off the ground
+                # Physical tilt is 19deg, but the piecewise depth calibration in
+                # yolo_detector already maps depth -> true horizontal distance, so
+                # set 0 here to avoid double-correcting the forward distance.
+                "camera_tilt_deg": 0.0,
+
                 "enable_yolo": True,
                 "yolo_model_path": YOLO_MODEL_PATH,
                 "yolo_confidence": 0.35,
@@ -48,6 +56,26 @@ def generate_launch_description():
         ],
     )
 
+    route_planner = Node(
+        package="leroi_perception",
+        executable="route_planner_node",
+        name="route_planner_node",
+        output="screen",
+        parameters=[
+            {
+                "alliance_color": "blue",
+                # Plan from the pose perception ships in the detection packet
+                # (assumed origin when no odom) so routes appear without the V5
+                # brain streaming odometry yet.
+                "require_fresh_odom": False,
+                # If a block passes the filters, always route to it -- no value
+                # cutoff to bob across (kills the go/no-go flicker).
+                "min_route_value": 0.0,
+            }
+        ],
+    )
+
     return LaunchDescription([
         oak_front,
+        route_planner,
     ])

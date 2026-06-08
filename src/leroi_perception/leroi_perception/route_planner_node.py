@@ -90,6 +90,10 @@ class RoutePlannerNode(Node):
         self.declare_parameter("route_rate_hz", 3.0)
         self.declare_parameter("stale_detection_timeout_sec", 1.0)
         self.declare_parameter("stale_odom_timeout_sec", 1.0)
+        # When False, plan from whatever pose the detection packet carries (e.g.
+        # the perception node's assumed-origin pose) without requiring fresh
+        # /v5/odom. Lets routes appear before the V5 brain streams odometry.
+        self.declare_parameter("require_fresh_odom", True)
 
         # Field bounds
         self.declare_parameter("field_min_x_cm", 0.0)
@@ -149,6 +153,9 @@ class RoutePlannerNode(Node):
         )
         self.stale_odom_timeout_sec = float(
             self.get_parameter("stale_odom_timeout_sec").value
+        )
+        self.require_fresh_odom = bool(
+            self.get_parameter("require_fresh_odom").value
         )
 
         self.field_min_x_cm = float(self.get_parameter("field_min_x_cm").value)
@@ -324,7 +331,10 @@ class RoutePlannerNode(Node):
         )
         odom_stale = odom_age is None or odom_age > self.stale_odom_timeout_sec
 
-        if not self.robot_pose_valid or odom_stale:
+        odom_blocked = (not self.robot_pose_valid) or (
+            self.require_fresh_odom and odom_stale
+        )
+        if odom_blocked:
             self.publish_status(
                 route=[],
                 candidates=[],

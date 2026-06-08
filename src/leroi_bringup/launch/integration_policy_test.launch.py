@@ -117,7 +117,7 @@ def generate_launch_description():
                 "object_history_sec": 3.0,
                 "target_path_topic": "/robot/command",
                 "action_ack_topic": "/robot/action_ack",
-                "camera_offset_x_cm": 0.0,
+                "camera_offset_x_cm": -0.635,  # camera mounted 0.25in left of robot center
                 "camera_offset_y_cm": 15.0,
                 "camera_offset_z_cm": 25.0,
                 "enable_goal_view": False,

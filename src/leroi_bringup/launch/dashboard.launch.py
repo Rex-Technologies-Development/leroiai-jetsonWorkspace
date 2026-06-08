@@ -43,7 +43,7 @@ def generate_launch_description():
                         "send_all_field_detections": True,
                         "block_class_substrings": ["block", "red", "blue"],
                         "object_history_sec": 3.0,
-                        "camera_offset_x_cm": 0.0,
+                        "camera_offset_x_cm": -0.635,  # camera mounted 0.25in left of robot center
                         "camera_offset_y_cm": 15.0,
                         "camera_offset_z_cm": 25.0,
                         "enable_robot_channel": True,

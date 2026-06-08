@@ -20,6 +20,26 @@ ROBOT_Y = MAP_H - 50
 SMOOTHING_ALPHA = 0.20
 MAX_POSITION_JUMP_CM = 80
 
+# Experimental: when True, report the RAW DepthAI depth sampled at the detection
+# center (no region median, no temporal smoothing) so raw stereo accuracy can be
+# evaluated on the feed. Set back to False to restore median-over-box + smoothing.
+RAW_DEPTH_MODE = False
+
+# Piecewise depth calibration: corrected_z = scale*measured + offset, chosen by
+# range (split near the 2 ft mark, in MEASURED-depth terms). Applied to the
+# forward distance only -- lateral X stays on the unscaled depth, which reads
+# accurately.
+# Near range fit from tape data (16/20/24 in): a ~constant +8 cm over-read, so a
+# fixed offset fits far better than a scale. Far range pending >2 ft points.
+# The raw depth jumps from ~85 (30in true) to ~134 (36in true) as contamination
+# kicks in, so the split lives in that gap. Near range is a flat offset; far range
+# is a scale+offset fit to noisy/contaminated data (rough beyond ~30in).
+DEPTH_BREAKPOINT_CM = 100.0         # measured depth (cm)
+DEPTH_NEAR_SCALE = 1.0
+DEPTH_NEAR_OFFSET_CM = -8.2         # fit from 16/20/24/30in: flat ~8.2cm over-read
+DEPTH_FAR_SCALE = 0.562            # fit from 36/48/60in: true = 0.562*measured + 14.5
+DEPTH_FAR_OFFSET_CM = 14.5
+
 
 def _clamp_box(
     x1: int, y1: int, x2: int, y2: int, w: int, h: int
@@ -74,6 +94,41 @@ def _get_region_depth(
         }, (px, py)
 
     return None, (px, py)
+
+
+def _center_raw_depth_mm(
+    depth: np.ndarray, px: int, py: int
+) -> Optional[float]:
+    """Raw DepthAI depth (mm) at the detection center pixel, no region median.
+
+    Returns the single center-pixel value when it is valid; only if that exact
+    pixel is invalid does it fall back to the nearest valid in a tiny 5x5 window
+    (so the readout is essentially the camera's own depth, not our averaging).
+    """
+    h, w = depth.shape
+    px = max(0, min(int(px), w - 1))
+    py = max(0, min(int(py), h - 1))
+
+    z = float(depth[py, px])
+    if MIN_DEPTH_MM < z < MAX_DEPTH_MM:
+        return z
+
+    x1 = max(0, px - 2)
+    x2 = min(w, px + 3)
+    y1 = max(0, py - 2)
+    y2 = min(h, py + 3)
+    crop = depth[y1:y2, x1:x2]
+    valid = crop[(crop > MIN_DEPTH_MM) & (crop < MAX_DEPTH_MM)]
+    if len(valid) == 0:
+        return None
+    return float(np.median(valid))
+
+
+def _corrected_depth_cm(z_cm: float) -> float:
+    """Piecewise depth calibration (scale*z + offset), split near the 2 ft mark."""
+    if z_cm <= DEPTH_BREAKPOINT_CM:
+        return DEPTH_NEAR_SCALE * z_cm + DEPTH_NEAR_OFFSET_CM
+    return DEPTH_FAR_SCALE * z_cm + DEPTH_FAR_OFFSET_CM
 
 
 def _class_color(name: str) -> Tuple[int, int, int]:
@@ -198,13 +253,39 @@ class YoloDetector:
                 continue
 
             px, py = center
+
+            if RAW_DEPTH_MODE:
+                # Raw DepthAI depth at the box center, no median over the region
+                # and no temporal smoothing.
+                Z = _center_raw_depth_mm(depth_frame, px, py)
+                if Z is None:
+                    det.update({"x_cm": None, "y_cm": None, "z_cm": None, "depth_region": None})
+                    continue
+
+                X = (px - cx) * Z / fx
+                Y = (py - cy) * Z / fy
+                det.update(
+                    {
+                        "x_cm": X / 10.0,
+                        "y_cm": Y / 10.0,
+                        "z_cm": Z / 10.0,
+                        "raw_x_cm": X / 10.0,
+                        "raw_z_cm": Z / 10.0,
+                        "depth_region": (px, py, px, py),
+                        "depth_region_name": "raw center",
+                        "depth_valid_ratio": 1.0,
+                    }
+                )
+                continue
+
             Z = depth_info["z"]
             X = (px - cx) * Z / fx
             Y = (py - cy) * Z / fy
 
             raw_x_cm = X / 10.0
             raw_y_cm = Y / 10.0
-            raw_z_cm = Z / 10.0
+            # Apply the piecewise depth calibration to the forward distance.
+            raw_z_cm = _corrected_depth_cm(Z / 10.0)
 
             smooth_x_cm, smooth_z_cm = self._smooth_position(
                 det["class_name"], raw_x_cm, raw_z_cm, px, py
