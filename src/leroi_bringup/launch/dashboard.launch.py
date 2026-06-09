@@ -39,13 +39,13 @@ def generate_launch_description():
                         "status_topic": "/dashboard/status",
                         "sync_rate_hz": 2.0,
                         "reconnect_period_sec": 5.0,
-                        "field_cm_to_dashboard": 1.0,
+                        "field_in_to_dashboard": 1.0,
                         "send_all_field_detections": True,
                         "block_class_substrings": ["block", "red", "blue"],
                         "object_history_sec": 3.0,
-                        "camera_offset_x_cm": -0.635,  # camera mounted 0.25in left of robot center
-                        "camera_offset_y_cm": 15.0,
-                        "camera_offset_z_cm": 25.0,
+                        "camera_offset_x_in": -0.25,  # camera mounted 0.25in left of robot center
+                        "camera_offset_y_in": 5.91,
+                        "camera_offset_z_in": 9.84,
                         "enable_robot_channel": True,
                         "enable_blocks_channel": True,
                         "enable_camera_channel": True,

@@ -4,21 +4,21 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-# Depth filter bounds (mm)
+# Depth filter bounds (mm) -- raw DepthAI depth frame is natively in millimeters.
 MIN_DEPTH_MM = 150
 MAX_DEPTH_MM = 5000
 
-# Top-down map display
+# Top-down map display (inches)
 MAP_W = 600
 MAP_H = 600
-MAP_X_RANGE_CM = 200
-MAP_Z_RANGE_CM = 300
+MAP_X_RANGE_IN = 78.74    # +/- lateral extent shown
+MAP_Z_RANGE_IN = 118.11   # forward extent shown
 ROBOT_X = MAP_W // 2
 ROBOT_Y = MAP_H - 50
 
 # Position smoothing
 SMOOTHING_ALPHA = 0.20
-MAX_POSITION_JUMP_CM = 80
+MAX_POSITION_JUMP_IN = 31.5
 
 # Experimental: when True, report the RAW DepthAI depth sampled at the detection
 # center (no region median, no temporal smoothing) so raw stereo accuracy can be
@@ -26,19 +26,23 @@ MAX_POSITION_JUMP_CM = 80
 RAW_DEPTH_MODE = False
 
 # Piecewise depth calibration: corrected_z = scale*measured + offset, chosen by
-# range (split near the 2 ft mark, in MEASURED-depth terms). Applied to the
-# forward distance only -- lateral X stays on the unscaled depth, which reads
-# accurately.
-# Near range fit from tape data (16/20/24 in): a ~constant +8 cm over-read, so a
-# fixed offset fits far better than a scale. Far range pending >2 ft points.
-# The raw depth jumps from ~85 (30in true) to ~134 (36in true) as contamination
-# kicks in, so the split lives in that gap. Near range is a flat offset; far range
-# is a scale+offset fit to noisy/contaminated data (rough beyond ~30in).
-DEPTH_BREAKPOINT_CM = 100.0         # measured depth (cm)
+# range (split near the 2 ft mark, in MEASURED-depth terms). Applied to both the
+# forward distance and the lateral X (lateral is projected from the corrected
+# depth so sideways map positions track the same calibration).
+# Near range fit from tape data (16/20/24 in): a ~constant +3.23 in over-read, so
+# a fixed offset fits far better than a scale. Far range pending >2 ft points.
+# The raw depth jumps from ~33in (30in true) to ~53in (36in true) as
+# contamination kicks in, so the split lives in that gap. Near range is a flat
+# offset; far range is a scale+offset fit to noisy/contaminated data (rough
+# beyond ~30 in). Values converted from the original metric fit (/2.54).
+DEPTH_BREAKPOINT_IN = 39.37        # measured depth (in)
 DEPTH_NEAR_SCALE = 1.0
-DEPTH_NEAR_OFFSET_CM = -8.2         # fit from 16/20/24/30in: flat ~8.2cm over-read
-DEPTH_FAR_SCALE = 0.562            # fit from 36/48/60in: true = 0.562*measured + 14.5
-DEPTH_FAR_OFFSET_CM = 14.5
+DEPTH_NEAR_OFFSET_IN = -3.23       # flat over-read in the near range
+DEPTH_FAR_SCALE = 0.562           # unitless; true = 0.562*measured + 5.71 in
+DEPTH_FAR_OFFSET_IN = 5.71
+
+# Millimeters per inch, for converting the raw depth frame to inches.
+MM_PER_IN = 25.4
 
 
 def _clamp_box(
@@ -124,11 +128,11 @@ def _center_raw_depth_mm(
     return float(np.median(valid))
 
 
-def _corrected_depth_cm(z_cm: float) -> float:
+def _corrected_depth_in(z_in: float) -> float:
     """Piecewise depth calibration (scale*z + offset), split near the 2 ft mark."""
-    if z_cm <= DEPTH_BREAKPOINT_CM:
-        return DEPTH_NEAR_SCALE * z_cm + DEPTH_NEAR_OFFSET_CM
-    return DEPTH_FAR_SCALE * z_cm + DEPTH_FAR_OFFSET_CM
+    if z_in <= DEPTH_BREAKPOINT_IN:
+        return DEPTH_NEAR_SCALE * z_in + DEPTH_NEAR_OFFSET_IN
+    return DEPTH_FAR_SCALE * z_in + DEPTH_FAR_OFFSET_IN
 
 
 def _class_color(name: str) -> Tuple[int, int, int]:
@@ -232,7 +236,7 @@ class YoloDetector:
         cx: float,
         cy: float,
     ) -> List[Dict[str, Any]]:
-        """Run YOLO detection and enrich each result with 3D coordinates from stereo depth."""
+        """Run YOLO detection and enrich each result with 3D coordinates (inches) from stereo depth."""
         self._cleanup_old_smoothed_objects()
 
         h, w = frame.shape[:2]
@@ -249,28 +253,29 @@ class YoloDetector:
             depth_info, center = _get_region_depth(depth_frame, x1, y1, x2, y2)
 
             if depth_info is None or center is None:
-                det.update({"x_cm": None, "y_cm": None, "z_cm": None, "depth_region": None})
+                det.update({"x_in": None, "y_in": None, "z_in": None, "depth_region": None})
                 continue
 
             px, py = center
 
             if RAW_DEPTH_MODE:
                 # Raw DepthAI depth at the box center, no median over the region
-                # and no temporal smoothing.
+                # and no temporal smoothing. No calibration applied (raw eval mode).
                 Z = _center_raw_depth_mm(depth_frame, px, py)
                 if Z is None:
-                    det.update({"x_cm": None, "y_cm": None, "z_cm": None, "depth_region": None})
+                    det.update({"x_in": None, "y_in": None, "z_in": None, "depth_region": None})
                     continue
 
-                X = (px - cx) * Z / fx
-                Y = (py - cy) * Z / fy
+                z_in = Z / MM_PER_IN
+                x_in = (px - cx) * z_in / fx
+                y_in = (py - cy) * z_in / fy
                 det.update(
                     {
-                        "x_cm": X / 10.0,
-                        "y_cm": Y / 10.0,
-                        "z_cm": Z / 10.0,
-                        "raw_x_cm": X / 10.0,
-                        "raw_z_cm": Z / 10.0,
+                        "x_in": x_in,
+                        "y_in": y_in,
+                        "z_in": z_in,
+                        "raw_x_in": x_in,
+                        "raw_z_in": z_in,
                         "depth_region": (px, py, px, py),
                         "depth_region_name": "raw center",
                         "depth_valid_ratio": 1.0,
@@ -278,26 +283,27 @@ class YoloDetector:
                 )
                 continue
 
-            Z = depth_info["z"]
-            X = (px - cx) * Z / fx
-            Y = (py - cy) * Z / fy
+            # Apply the piecewise depth calibration to the forward distance, then
+            # project BOTH lateral X and vertical Y from that corrected depth so
+            # the sideways position tracks the same calibration.
+            z_meas_in = depth_info["z"] / MM_PER_IN
+            z_corr_in = _corrected_depth_in(z_meas_in)
 
-            raw_x_cm = X / 10.0
-            raw_y_cm = Y / 10.0
-            # Apply the piecewise depth calibration to the forward distance.
-            raw_z_cm = _corrected_depth_cm(Z / 10.0)
+            raw_x_in = (px - cx) * z_corr_in / fx
+            raw_y_in = (py - cy) * z_corr_in / fy
+            raw_z_in = z_corr_in
 
-            smooth_x_cm, smooth_z_cm = self._smooth_position(
-                det["class_name"], raw_x_cm, raw_z_cm, px, py
+            smooth_x_in, smooth_z_in = self._smooth_position(
+                det["class_name"], raw_x_in, raw_z_in, px, py
             )
 
             det.update(
                 {
-                    "x_cm": smooth_x_cm,
-                    "y_cm": raw_y_cm,
-                    "z_cm": smooth_z_cm,
-                    "raw_x_cm": raw_x_cm,
-                    "raw_z_cm": raw_z_cm,
+                    "x_in": smooth_x_in,
+                    "y_in": raw_y_in,
+                    "z_in": smooth_z_in,
+                    "raw_x_in": raw_x_in,
+                    "raw_z_in": raw_z_in,
                     "depth_region": depth_info["region"],
                     "depth_region_name": depth_info["region_name"],
                     "depth_valid_ratio": depth_info["valid_ratio"],
@@ -307,7 +313,7 @@ class YoloDetector:
         return detections
 
     def _smooth_position(
-        self, name: str, x_cm: float, z_cm: float, px: int, py: int
+        self, name: str, x_in: float, z_in: float, px: int, py: int
     ) -> Tuple[float, float]:
         grid_x = px // 80
         grid_y = py // 80
@@ -315,25 +321,25 @@ class YoloDetector:
 
         if key not in self._smoothed_objects:
             self._smoothed_objects[key] = {
-                "x_cm": x_cm,
-                "z_cm": z_cm,
+                "x_in": x_in,
+                "z_in": z_in,
                 "last_seen": time.time(),
             }
-            return x_cm, z_cm
+            return x_in, z_in
 
-        old_x = self._smoothed_objects[key]["x_cm"]
-        old_z = self._smoothed_objects[key]["z_cm"]
+        old_x = self._smoothed_objects[key]["x_in"]
+        old_z = self._smoothed_objects[key]["z_in"]
 
-        jump = np.sqrt((x_cm - old_x) ** 2 + (z_cm - old_z) ** 2)
-        if jump > MAX_POSITION_JUMP_CM:
-            x_cm = old_x * 0.8 + x_cm * 0.2
-            z_cm = old_z * 0.8 + z_cm * 0.2
+        jump = np.sqrt((x_in - old_x) ** 2 + (z_in - old_z) ** 2)
+        if jump > MAX_POSITION_JUMP_IN:
+            x_in = old_x * 0.8 + x_in * 0.2
+            z_in = old_z * 0.8 + z_in * 0.2
 
-        smooth_x = old_x * (1 - SMOOTHING_ALPHA) + x_cm * SMOOTHING_ALPHA
-        smooth_z = old_z * (1 - SMOOTHING_ALPHA) + z_cm * SMOOTHING_ALPHA
+        smooth_x = old_x * (1 - SMOOTHING_ALPHA) + x_in * SMOOTHING_ALPHA
+        smooth_z = old_z * (1 - SMOOTHING_ALPHA) + z_in * SMOOTHING_ALPHA
 
-        self._smoothed_objects[key]["x_cm"] = smooth_x
-        self._smoothed_objects[key]["z_cm"] = smooth_z
+        self._smoothed_objects[key]["x_in"] = smooth_x
+        self._smoothed_objects[key]["z_in"] = smooth_z
         self._smoothed_objects[key]["last_seen"] = time.time()
 
         return smooth_x, smooth_z
@@ -370,31 +376,31 @@ class YoloDetector:
         cv2.putText(map_img, "Top Down Map", (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (230, 230, 230), 2)
         cv2.putText(map_img, "X = left/right, Z = forward", (15, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (210, 210, 210), 1)
 
-        for z_cm_tick in range(50, MAP_Z_RANGE_CM + 1, 50):
-            y = int(ROBOT_Y - (z_cm_tick / MAP_Z_RANGE_CM) * (ROBOT_Y - 40))
+        for z_in_tick in range(20, int(MAP_Z_RANGE_IN) + 1, 20):
+            y = int(ROBOT_Y - (z_in_tick / MAP_Z_RANGE_IN) * (ROBOT_Y - 40))
             cv2.line(map_img, (ROBOT_X - 8, y), (ROBOT_X + 8, y), (180, 180, 180), 2)
-            cv2.putText(map_img, f"{z_cm_tick}cm", (ROBOT_X + 15, y + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+            cv2.putText(map_img, f"{z_in_tick}in", (ROBOT_X + 15, y + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
 
         for det in detections:
-            x_cm = det.get("x_cm")
-            z_cm = det.get("z_cm")
+            x_in = det.get("x_in")
+            z_in = det.get("z_in")
 
-            if x_cm is None or z_cm is None:
+            if x_in is None or z_in is None:
                 continue
-            if z_cm < 0 or z_cm > MAP_Z_RANGE_CM:
+            if z_in < 0 or z_in > MAP_Z_RANGE_IN:
                 continue
-            if abs(x_cm) > MAP_X_RANGE_CM:
+            if abs(x_in) > MAP_X_RANGE_IN:
                 continue
 
             name = det.get("class_name", "")
             color = _class_color(name)
 
-            map_x = int(ROBOT_X + (x_cm / MAP_X_RANGE_CM) * (MAP_W / 2 - 40))
-            map_y = int(ROBOT_Y - (z_cm / MAP_Z_RANGE_CM) * (ROBOT_Y - 40))
+            map_x = int(ROBOT_X + (x_in / MAP_X_RANGE_IN) * (MAP_W / 2 - 40))
+            map_y = int(ROBOT_Y - (z_in / MAP_Z_RANGE_IN) * (ROBOT_Y - 40))
 
             cv2.circle(map_img, (map_x, map_y), 10, color, -1)
             cv2.circle(map_img, (map_x, map_y), 13, (255, 255, 255), 1)
-            cv2.putText(map_img, f"{name} {z_cm:.0f}cm", (map_x + 12, map_y - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
-            cv2.putText(map_img, f"X:{x_cm:.0f}", (map_x + 12, map_y + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+            cv2.putText(map_img, f"{name} {z_in:.0f}in", (map_x + 12, map_y - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+            cv2.putText(map_img, f"X:{x_in:.0f}", (map_x + 12, map_y + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
 
         return map_img

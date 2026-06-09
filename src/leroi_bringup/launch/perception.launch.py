@@ -23,9 +23,9 @@ def generate_launch_description():
                 "oak_mxid": "",
                 "oak_with_depth": True,
 
-                "camera_offset_x_cm": -0.635,  # camera mounted 0.25in left of robot center
-                "camera_offset_y_cm": 15.0,    # camera 15cm forward of robot center
-                "camera_offset_z_cm": 34.93,   # lens 13 3/4in off the ground
+                "camera_offset_x_in": -0.25,  # camera mounted 0.25in left of robot center
+                "camera_offset_y_in": 5.91,    # camera 5.91in forward of robot center
+                "camera_offset_z_in": 13.75,   # lens 13 3/4in off the ground
                 # Physical tilt is 19deg, but the piecewise depth calibration in
                 # yolo_detector already maps depth -> true horizontal distance, so
                 # set 0 here to avoid double-correcting the forward distance.

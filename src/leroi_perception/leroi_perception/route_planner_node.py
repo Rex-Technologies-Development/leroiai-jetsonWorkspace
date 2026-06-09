@@ -28,9 +28,9 @@ class RoutePlannerNode(Node):
               {
                 "class_name": "blue_block",
                 "confidence": 0.92,
-                "x_field_cm": 100.0,
-                "y_field_cm": 80.0,
-                "z_cm": 120.0
+                "x_field_in": 100.0,
+                "y_field_in": 80.0,
+                "z_in": 120.0
               }
             ]
           }
@@ -58,7 +58,7 @@ class RoutePlannerNode(Node):
         Debug/status info.
 
     Coordinate convention:
-      field coordinates in cm
+      field coordinates in inches
       (0, 0) = bottom-left
       +X = right
       +Y = up/forward
@@ -96,40 +96,49 @@ class RoutePlannerNode(Node):
         self.declare_parameter("require_fresh_odom", True)
 
         # Field bounds
-        self.declare_parameter("field_min_x_cm", 0.0)
-        self.declare_parameter("field_max_x_cm", 365.76)
-        self.declare_parameter("field_min_y_cm", 0.0)
-        self.declare_parameter("field_max_y_cm", 365.76)
+        self.declare_parameter("field_min_x_in", 0.0)
+        self.declare_parameter("field_max_x_in", 144.0)
+        self.declare_parameter("field_min_y_in", 0.0)
+        self.declare_parameter("field_max_y_in", 144.0)
 
         # Route limits
         self.declare_parameter("max_route_points", 5)
         self.declare_parameter("max_carry_blocks", 5)
         self.declare_parameter("already_held_blocks", 0)
 
-        # Pickup zone limit (field cm). Restricts which blocks this robot will be
+        # Pickup zone limit (field in). Restricts which blocks this robot will be
         # routed to, independent of the field bounds used for geometry. For the
         # 24in robot we keep it on the LEFT half (small wander allowed) so it does
         # not impede the 15in robot on the right. Defaults = no restriction.
-        self.declare_parameter("pickup_x_min_cm", -1.0e9)
-        self.declare_parameter("pickup_x_max_cm", 1.0e9)
+        self.declare_parameter("pickup_x_min_in", -1.0e9)
+        self.declare_parameter("pickup_x_max_in", 1.0e9)
 
         # Scoring / filtering
         self.declare_parameter("min_confidence", 0.35)
-        self.declare_parameter("wall_margin_cm", 45.0)
-        self.declare_parameter("cluster_dist_cm", 90.0)
-        self.declare_parameter("cluster_pickup_dist_cm", 38.0)
-        self.declare_parameter("min_route_value", 0.015)
+        self.declare_parameter("wall_margin_in", 17.72)
+        self.declare_parameter("cluster_dist_in", 35.43)
+        self.declare_parameter("cluster_pickup_dist_in", 14.96)
+        # Cutoff on value = score / (dist_in + DIST_SOFTEN_IN). Scaled up by 2.54
+        # from the old centimeter cutoff (0.015) since value is per-inch now.
+        self.declare_parameter("min_route_value", 0.0381)
 
-        # Approximate no-pickup zones around field structures.
-        # These should be tuned after seeing real projected detections.
+        # No-pickup zones around field structures (field inches).
         self.declare_parameter("skip_near_goals", True)
-        self.declare_parameter("center_goal_skip_radius_cm", 65.0)
-        self.declare_parameter("long_goal_y_min_cm", 115.0)
-        self.declare_parameter("long_goal_y_max_cm", 250.0)
-        self.declare_parameter("long_goal_x_margin_cm", 75.0)
-        self.declare_parameter("top_bottom_goal_x_min_cm", 120.0)
-        self.declare_parameter("top_bottom_goal_x_max_cm", 246.0)
-        self.declare_parameter("top_bottom_goal_y_margin_cm", 55.0)
+        # Center X: 22in-diameter cross of two 5in-thick diagonal bars.
+        self.declare_parameter("center_x_radius_in", 11.0)
+        self.declare_parameter("center_x_thickness_in", 5.0)
+        # LEFT long goal as an explicit rectangle: x in [min,max], y in [min,max].
+        # Measured corners (21,48)-(27,96). The RIGHT long goal is the mirror of
+        # this across the field center-x (field_max_x - [max,min]) -> [117,123].
+        self.declare_parameter("long_goal_x_min_in", 21.0)
+        self.declare_parameter("long_goal_x_max_in", 27.0)
+        self.declare_parameter("long_goal_y_min_in", 48.0)
+        self.declare_parameter("long_goal_y_max_in", 96.0)
+        # Safety padding grown around every goal rectangle before skipping a block.
+        self.declare_parameter("goal_skip_pad_in", 0.0)
+        self.declare_parameter("top_bottom_goal_x_min_in", 47.24)
+        self.declare_parameter("top_bottom_goal_x_max_in", 96.85)
+        self.declare_parameter("top_bottom_goal_y_margin_in", 21.65)
 
         # Behavior
         self.declare_parameter("publish_empty_route", True)
@@ -165,10 +174,10 @@ class RoutePlannerNode(Node):
             self.get_parameter("require_fresh_odom").value
         )
 
-        self.field_min_x_cm = float(self.get_parameter("field_min_x_cm").value)
-        self.field_max_x_cm = float(self.get_parameter("field_max_x_cm").value)
-        self.field_min_y_cm = float(self.get_parameter("field_min_y_cm").value)
-        self.field_max_y_cm = float(self.get_parameter("field_max_y_cm").value)
+        self.field_min_x_in = float(self.get_parameter("field_min_x_in").value)
+        self.field_max_x_in = float(self.get_parameter("field_max_x_in").value)
+        self.field_min_y_in = float(self.get_parameter("field_min_y_in").value)
+        self.field_max_y_in = float(self.get_parameter("field_max_y_in").value)
 
         self.max_route_points = int(self.get_parameter("max_route_points").value)
         self.max_carry_blocks = int(self.get_parameter("max_carry_blocks").value)
@@ -176,34 +185,35 @@ class RoutePlannerNode(Node):
             self.get_parameter("already_held_blocks").value
         )
 
-        self.pickup_x_min_cm = float(self.get_parameter("pickup_x_min_cm").value)
-        self.pickup_x_max_cm = float(self.get_parameter("pickup_x_max_cm").value)
+        self.pickup_x_min_in = float(self.get_parameter("pickup_x_min_in").value)
+        self.pickup_x_max_in = float(self.get_parameter("pickup_x_max_in").value)
 
         self.min_confidence = float(self.get_parameter("min_confidence").value)
-        self.wall_margin_cm = float(self.get_parameter("wall_margin_cm").value)
-        self.cluster_dist_cm = float(self.get_parameter("cluster_dist_cm").value)
-        self.cluster_pickup_dist_cm = float(
-            self.get_parameter("cluster_pickup_dist_cm").value
+        self.wall_margin_in = float(self.get_parameter("wall_margin_in").value)
+        self.cluster_dist_in = float(self.get_parameter("cluster_dist_in").value)
+        self.cluster_pickup_dist_in = float(
+            self.get_parameter("cluster_pickup_dist_in").value
         )
         self.min_route_value = float(self.get_parameter("min_route_value").value)
 
         self.skip_near_goals = bool(self.get_parameter("skip_near_goals").value)
-        self.center_goal_skip_radius_cm = float(
-            self.get_parameter("center_goal_skip_radius_cm").value
+        self.center_x_radius_in = float(self.get_parameter("center_x_radius_in").value)
+        self.center_x_thickness_in = float(
+            self.get_parameter("center_x_thickness_in").value
         )
-        self.long_goal_y_min_cm = float(self.get_parameter("long_goal_y_min_cm").value)
-        self.long_goal_y_max_cm = float(self.get_parameter("long_goal_y_max_cm").value)
-        self.long_goal_x_margin_cm = float(
-            self.get_parameter("long_goal_x_margin_cm").value
+        self.long_goal_x_min_in = float(self.get_parameter("long_goal_x_min_in").value)
+        self.long_goal_x_max_in = float(self.get_parameter("long_goal_x_max_in").value)
+        self.long_goal_y_min_in = float(self.get_parameter("long_goal_y_min_in").value)
+        self.long_goal_y_max_in = float(self.get_parameter("long_goal_y_max_in").value)
+        self.goal_skip_pad_in = float(self.get_parameter("goal_skip_pad_in").value)
+        self.top_bottom_goal_x_min_in = float(
+            self.get_parameter("top_bottom_goal_x_min_in").value
         )
-        self.top_bottom_goal_x_min_cm = float(
-            self.get_parameter("top_bottom_goal_x_min_cm").value
+        self.top_bottom_goal_x_max_in = float(
+            self.get_parameter("top_bottom_goal_x_max_in").value
         )
-        self.top_bottom_goal_x_max_cm = float(
-            self.get_parameter("top_bottom_goal_x_max_cm").value
-        )
-        self.top_bottom_goal_y_margin_cm = float(
-            self.get_parameter("top_bottom_goal_y_margin_cm").value
+        self.top_bottom_goal_y_margin_in = float(
+            self.get_parameter("top_bottom_goal_y_margin_in").value
         )
 
         self.publish_empty_route = bool(
@@ -407,8 +417,8 @@ class RoutePlannerNode(Node):
             if confidence < self.min_confidence:
                 continue
 
-            x_field = det.get("x_field_cm")
-            y_field = det.get("y_field_cm")
+            x_field = det.get("x_field_in")
+            y_field = det.get("y_field_in")
 
             if x_field is None or y_field is None:
                 continue
@@ -423,7 +433,7 @@ class RoutePlannerNode(Node):
                 continue
 
             # Keep this robot inside its pickup zone (e.g. left half for the 24in).
-            if not (self.pickup_x_min_cm <= x <= self.pickup_x_max_cm):
+            if not (self.pickup_x_min_in <= x <= self.pickup_x_max_in):
                 continue
 
             if self.near_wall_count(x, y) >= 2:
@@ -456,8 +466,8 @@ class RoutePlannerNode(Node):
                     "confidence": confidence,
                     "x": x,
                     "y": y,
-                    "x_cm": det.get("x_cm"),
-                    "z_cm": det.get("z_cm"),
+                    "x_in": det.get("x_in"),
+                    "z_in": det.get("z_in"),
                     "score": score,
                     "same_nearby": same_nearby,
                     "opp_nearby": opp_nearby,
@@ -491,7 +501,8 @@ class RoutePlannerNode(Node):
                     continue
 
                 dist = math.hypot(cluster["x"] - current_x, cluster["y"] - current_y)
-                value = cluster["score"] / (dist + 50.0)
+                # Distance-softening constant (inches).
+                value = cluster["score"] / (dist + 19.69)
 
                 if value > best_value:
                     best_value = value
@@ -553,7 +564,7 @@ class RoutePlannerNode(Node):
                             candidate["y"] - member["y"],
                         )
 
-                        if dist <= self.cluster_pickup_dist_cm:
+                        if dist <= self.cluster_pickup_dist_in:
                             cluster_entries.append(candidate)
                             merged = True
                             changed = True
@@ -623,8 +634,8 @@ class RoutePlannerNode(Node):
             if color not in ("red", "blue"):
                 continue
 
-            x_field = det.get("x_field_cm")
-            y_field = det.get("y_field_cm")
+            x_field = det.get("x_field_in")
+            y_field = det.get("y_field_in")
 
             if x_field is None or y_field is None:
                 continue
@@ -640,7 +651,7 @@ class RoutePlannerNode(Node):
             if dist <= 1e-6:
                 continue
 
-            if dist < self.cluster_dist_cm:
+            if dist < self.cluster_dist_in:
                 if color == self.target_color:
                     same += 1
                 elif color == self.opponent_color:
@@ -675,53 +686,67 @@ class RoutePlannerNode(Node):
     def near_wall_count(self, x: float, y: float) -> int:
         count = 0
 
-        if x < self.field_min_x_cm + self.wall_margin_cm:
+        if x < self.field_min_x_in + self.wall_margin_in:
             count += 1
 
-        if x > self.field_max_x_cm - self.wall_margin_cm:
+        if x > self.field_max_x_in - self.wall_margin_in:
             count += 1
 
-        if y < self.field_min_y_cm + self.wall_margin_cm:
+        if y < self.field_min_y_in + self.wall_margin_in:
             count += 1
 
-        if y > self.field_max_y_cm - self.wall_margin_cm:
+        if y > self.field_max_y_in - self.wall_margin_in:
             count += 1
 
         return count
 
     def near_any_goal(self, x: float, y: float) -> bool:
-        field_cx = 0.5 * (self.field_min_x_cm + self.field_max_x_cm)
-        field_cy = 0.5 * (self.field_min_y_cm + self.field_max_y_cm)
+        field_cx = 0.5 * (self.field_min_x_in + self.field_max_x_in)
+        field_cy = 0.5 * (self.field_min_y_in + self.field_max_y_in)
 
-        # Center X structure
-        if math.hypot(x - field_cx, y - field_cy) < self.center_goal_skip_radius_cm:
+        pad = self.goal_skip_pad_in
+
+        # Center X structure: two bars crossing at the field center, each rotated
+        # 45deg, center_x_thickness_in (5in) thick and reaching center_x_radius_in
+        # (11in) out along its diagonal -> a 22in-diameter X. A block is on the X
+        # if it lies within half-thickness of one diagonal AND within the arm
+        # length along it. p/q are distances to the two diagonals (y=x, y=-x).
+        dx = x - field_cx
+        dy = y - field_cy
+        half_t = 0.5 * self.center_x_thickness_in + pad
+        half_len = self.center_x_radius_in + pad
+        p = abs(dx - dy) / math.sqrt(2.0)   # to the y=x diagonal
+        q = abs(dx + dy) / math.sqrt(2.0)   # to the y=-x diagonal
+        if (p <= half_t and q <= half_len) or (q <= half_t and p <= half_len):
             return True
 
-        # Left long goal zone
+        # Left long goal: explicit rectangle (measured corners), grown by pad.
         if (
-            x < self.field_min_x_cm + self.long_goal_x_margin_cm
-            and self.long_goal_y_min_cm <= y <= self.long_goal_y_max_cm
+            self.long_goal_x_min_in - pad <= x <= self.long_goal_x_max_in + pad
+            and self.long_goal_y_min_in - pad <= y <= self.long_goal_y_max_in + pad
         ):
             return True
 
-        # Right long goal zone
+        # Right long goal: mirror of the left across the field center-x.
+        right_x_min = self.field_max_x_in - self.long_goal_x_max_in
+        right_x_max = self.field_max_x_in - self.long_goal_x_min_in
         if (
-            x > self.field_max_x_cm - self.long_goal_x_margin_cm
-            and self.long_goal_y_min_cm <= y <= self.long_goal_y_max_cm
+            right_x_min - pad <= x <= right_x_max + pad
+            and self.long_goal_y_min_in - pad <= y <= self.long_goal_y_max_in + pad
         ):
             return True
 
         # Bottom horizontal goal zone
         if (
-            y < self.field_min_y_cm + self.top_bottom_goal_y_margin_cm
-            and self.top_bottom_goal_x_min_cm <= x <= self.top_bottom_goal_x_max_cm
+            y < self.field_min_y_in + self.top_bottom_goal_y_margin_in
+            and self.top_bottom_goal_x_min_in <= x <= self.top_bottom_goal_x_max_in
         ):
             return True
 
         # Top horizontal goal zone
         if (
-            y > self.field_max_y_cm - self.top_bottom_goal_y_margin_cm
-            and self.top_bottom_goal_x_min_cm <= x <= self.top_bottom_goal_x_max_cm
+            y > self.field_max_y_in - self.top_bottom_goal_y_margin_in
+            and self.top_bottom_goal_x_min_in <= x <= self.top_bottom_goal_x_max_in
         ):
             return True
 
@@ -729,8 +754,8 @@ class RoutePlannerNode(Node):
 
     def in_field_bounds(self, x: float, y: float) -> bool:
         return (
-            self.field_min_x_cm <= x <= self.field_max_x_cm
-            and self.field_min_y_cm <= y <= self.field_max_y_cm
+            self.field_min_x_in <= x <= self.field_max_x_in
+            and self.field_min_y_in <= y <= self.field_max_y_in
         )
 
     def heading_from_to(
@@ -743,17 +768,10 @@ class RoutePlannerNode(Node):
         dx = to_x - from_x
         dy = to_y - from_y
 
-        # Heading convention:
-        # 0 degrees = +Y.
-        heading_deg = math.degrees(math.atan2(dx, dy))
-
-        while heading_deg < 0.0:
-            heading_deg += 360.0
-
-        while heading_deg >= 360.0:
-            heading_deg -= 360.0
-
-        return heading_deg
+        # Heading convention: 0 deg = +Y, signed shortest rotation in (-180, 180].
+        # +ve = turn toward +X (right), -ve = turn toward -X (left).
+        # atan2 already returns (-180, 180], so no wrap-to-360 is applied.
+        return math.degrees(math.atan2(dx, dy))
 
     @staticmethod
     def safe_float(value: Any, default: float = float("nan")) -> float:

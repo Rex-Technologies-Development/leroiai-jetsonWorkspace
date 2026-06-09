@@ -81,17 +81,21 @@ class PolicyNode(Node):
         self.declare_parameter("goal_full_min", 4)
         # Collect routing + zone.
         self.declare_parameter("use_route_planner_for_collect", True)
-        self.declare_parameter("zone_x_max_in", 0.0)      # 0 -> no zone limit
+        # Robot half-of-field limits (inches). 24in -> left [0,72], 15in -> right
+        # [72,144]. 0 -> that bound is disabled.
+        self.declare_parameter("zone_x_min_in", 0.0)      # 0 -> no lower bound
+        self.declare_parameter("zone_x_max_in", 0.0)      # 0 -> no upper bound
         self.declare_parameter("zone_x_wander_in", 12.0)
-        # Perception is cm, V5/odom is inches. 1/2.54 converts collect targets.
-        self.declare_parameter("perception_to_robot_scale", 1.0 / 2.54)
+        # Perception, V5/odom, and waypoints are all inches now, so this is an
+        # identity scale by default. Kept as a knob in case a strategy needs it.
+        self.declare_parameter("perception_to_robot_scale", 1.0)
 
         # --- Behavior ---
         self.declare_parameter("inference_rate_hz", 1.0)
         self.declare_parameter("require_confirmation", True)
         self.declare_parameter("respect_decision_busy", True)
         self.declare_parameter("max_blocks", 10)
-        self.declare_parameter("field_size_cm", 365.76)
+        self.declare_parameter("field_size_in", 144.0)
 
         gp = self.get_parameter
         self.mapped_objects_topic = str(gp("mapped_objects_topic").value)
@@ -109,7 +113,7 @@ class PolicyNode(Node):
         self.require_confirmation = bool(gp("require_confirmation").value)
         self.respect_decision_busy = bool(gp("respect_decision_busy").value)
         self.max_blocks = int(gp("max_blocks").value)
-        self.field_size_cm = float(gp("field_size_cm").value)
+        self.field_size_in = float(gp("field_size_in").value)
 
         # Strategy config: a flat dict each strategy reads what it needs from.
         # Action ids pass through as-is; 0 lets the scripted strategy pick the
@@ -122,7 +126,7 @@ class PolicyNode(Node):
             "obs_dim_override": int(gp("obs_dim_override").value),
             "action_id_map": str(gp("action_id_map").value),
             "max_blocks": self.max_blocks,
-            "field_size_cm": self.field_size_cm,
+            "field_size_in": self.field_size_in,
             # Scripted
             "alliance_color": str(gp("alliance_color").value),
             "score_long_action_id": int(gp("score_long_action_id").value),
@@ -138,6 +142,7 @@ class PolicyNode(Node):
             "goal_empty_max": int(gp("goal_empty_max").value),
             "goal_full_min": int(gp("goal_full_min").value),
             "use_route_planner_for_collect": bool(gp("use_route_planner_for_collect").value),
+            "zone_x_min_in": float(gp("zone_x_min_in").value),
             "zone_x_max_in": float(gp("zone_x_max_in").value),
             "zone_x_wander_in": float(gp("zone_x_wander_in").value),
             "perception_to_robot_scale": float(gp("perception_to_robot_scale").value),

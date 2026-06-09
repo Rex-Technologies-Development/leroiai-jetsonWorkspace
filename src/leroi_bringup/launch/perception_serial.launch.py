@@ -129,15 +129,15 @@ def generate_launch_description():
                 "map_width_px": 700,
                 "map_height_px": 700,
 
-                # VEX field is 12 ft x 12 ft = 365.76 cm.
+                # VEX field is 12 ft x 12 ft = 144 in.
                 # Coordinate convention:
                 #   (0, 0) = bottom-left of the displayed field map
                 #   +X = right
                 #   +Y = up/forward
-                "field_min_x_cm": 0.0,
-                "field_max_x_cm": 365.76,
-                "field_min_y_cm": 0.0,
-                "field_max_y_cm": 365.76,
+                "field_min_x_in": 0.0,
+                "field_max_x_in": 144.0,
+                "field_min_y_in": 0.0,
+                "field_max_y_in": 144.0,
 
                 # Field map image
                 "field_map_image_path": FIELD_MAP_PATH,
@@ -165,9 +165,9 @@ def generate_launch_description():
 
                 # Camera position relative to robot center.
                 # Tune these later based on where the OAK camera is mounted.
-                "camera_offset_x_cm": -0.635,  # camera mounted 0.25in left of robot center
-                "camera_offset_y_cm": 15.0,
-                "camera_offset_z_cm": 25.0,
+                "camera_offset_x_in": -0.25,  # camera mounted 0.25in left of robot center
+                "camera_offset_y_in": 5.91,
+                "camera_offset_z_in": 9.84,
 
                 # Disable goal view for now
                 "enable_goal_view": False,
@@ -192,13 +192,13 @@ def generate_launch_description():
                 "status_topic": "/dashboard/status",
                 "sync_rate_hz": 2.0,
                 "reconnect_period_sec": 5.0,
-                "field_cm_to_dashboard": 1.0,
+                "field_in_to_dashboard": 1.0,
                 "send_all_field_detections": True,
                 "block_class_substrings": ["block", "red", "blue"],
                 "object_history_sec": 3.0,
-                "camera_offset_x_cm": -0.635,  # camera mounted 0.25in left of robot center
-                "camera_offset_y_cm": 15.0,
-                "camera_offset_z_cm": 25.0,
+                "camera_offset_x_in": -0.25,  # camera mounted 0.25in left of robot center
+                "camera_offset_y_in": 5.91,
+                "camera_offset_z_in": 9.84,
                 "enable_robot_channel": True,
                 "enable_blocks_channel": True,
                 "enable_camera_channel": True,

@@ -82,7 +82,7 @@ class ScriptedStrategy(Strategy):
 
         self.max_collect_targets = int(cfg.get("max_collect_targets", 3))
 
-        # Goal regions (perception field cm) to assess. Each is a rectangle:
+        # Goal regions (perception field in) to assess. Each is a rectangle:
         # {"name","x_min","x_max","y_min","y_max"}. Empty -> assess ALL detected
         # blocks on the field (a rough proxy until goal regions are calibrated).
         self.goal_regions = self._parse_regions(cfg.get("goal_regions_json", ""))
@@ -92,13 +92,18 @@ class ScriptedStrategy(Strategy):
         self.goal_empty_max = int(cfg.get("goal_empty_max", 1))        # total <= -> "empty"
         self.goal_full_min = int(cfg.get("goal_full_min", 4))          # total >= -> "full"
 
-        # Perception cm -> robot inches for collect waypoints / distance sorting.
-        self.perception_to_robot_scale = float(cfg.get("perception_to_robot_scale", 1.0 / 2.54))
+        # Perception and robot/odom are both inches now, so this is identity by
+        # default (kept as a knob in case a downstream frame ever differs).
+        self.perception_to_robot_scale = float(cfg.get("perception_to_robot_scale", 1.0))
 
-        # Keep this robot in its zone (robot units = inches). For the 24in robot
-        # we stay on the LEFT half: soft target x <= zone_x_max_in, with a little
-        # wander allowed up to zone_x_max_in + zone_x_wander_in. Waypoints beyond
-        # the hard limit are clamped. 0 max -> no zone limit.
+        # Keep this robot on its half of the field (robot units = inches).
+        #   24in robot -> LEFT half:  zone_x_min_in=0,  zone_x_max_in=72
+        #   15in robot -> RIGHT half: zone_x_min_in=72, zone_x_max_in=144
+        # A little wander is allowed past each soft edge (zone_x_wander_in).
+        # Waypoints past the hard edge (soft +/- wander) are clamped back in.
+        # zone_x_max_in <= 0 disables the upper bound; zone_x_min_in <= 0 disables
+        # the lower bound, so the default (0, 0) is "no zone limit".
+        self.zone_x_min_in = float(cfg.get("zone_x_min_in", 0.0))
         self.zone_x_max_in = float(cfg.get("zone_x_max_in", 0.0))
         self.zone_x_wander_in = float(cfg.get("zone_x_wander_in", 12.0))
 
@@ -279,7 +284,7 @@ class ScriptedStrategy(Strategy):
         return self._clamp_zone(points)
 
     def _route_suggestion_points(self, state: GameState) -> List[Dict[str, float]]:
-        """Points from the latest route planner suggestion, converted cm->inches."""
+        """Points from the latest route planner suggestion (already inches)."""
         if not self.use_route_planner_for_collect or not state.route_suggestion:
             return []
         raw = state.route_suggestion.get("points") or []
@@ -299,20 +304,31 @@ class ScriptedStrategy(Strategy):
         return out
 
     def _clamp_zone(self, points: List[Dict[str, float]]) -> List[Dict[str, float]]:
-        """Clamp waypoint x to the robot's zone (no-op if zone_x_max_in <= 0)."""
-        if self.zone_x_max_in <= 0:
+        """Clamp waypoint x to the robot's half of the field.
+
+        Upper bound active when zone_x_max_in > 0 (keeps the LEFT-side robot off
+        the right half); lower bound active when zone_x_min_in > 0 (keeps the
+        RIGHT-side robot off the left half). Each edge allows zone_x_wander_in of
+        slack before the hard clamp.
+        """
+        has_max = self.zone_x_max_in > 0
+        has_min = self.zone_x_min_in > 0
+        if not has_max and not has_min:
             return points
         hard_max = self.zone_x_max_in + self.zone_x_wander_in
+        hard_min = self.zone_x_min_in - self.zone_x_wander_in
         clamped = []
         for p in points:
             q = dict(p)
-            if q["x"] > hard_max:
+            if has_max and q["x"] > hard_max:
                 q["x"] = hard_max
+            if has_min and q["x"] < hard_min:
+                q["x"] = hard_min
             clamped.append(q)
         return clamped
 
     def _blocks_robot_frame(self, state: GameState) -> List[Dict[str, Any]]:
-        """Blocks with positions converted from perception cm to robot inches."""
+        """Blocks with positions in robot inches (perception is already inches)."""
         s = self.perception_to_robot_scale
         out = []
         for b in state.blocks:

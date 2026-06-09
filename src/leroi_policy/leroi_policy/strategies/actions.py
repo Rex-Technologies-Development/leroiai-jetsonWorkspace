@@ -67,7 +67,7 @@ def action_name(action_id: int) -> str:
 
 
 def extract_blocks(mapped_objects: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Pull block positions (field cm) from a mapped_objects packet."""
+    """Pull block positions (field in) from a mapped_objects packet."""
     out: List[Dict[str, Any]] = []
     if not mapped_objects:
         return out
@@ -76,8 +76,8 @@ def extract_blocks(mapped_objects: Dict[str, Any]) -> List[Dict[str, Any]]:
             out.append(
                 {
                     "class_name": str(obj.get("class_name", "")),
-                    "x": float(obj.get("x_field_cm", 0.0)),
-                    "y": float(obj.get("y_field_cm", 0.0)),
+                    "x": float(obj.get("x_field_in", 0.0)),
+                    "y": float(obj.get("y_field_in", 0.0)),
                 }
             )
         except (TypeError, ValueError):

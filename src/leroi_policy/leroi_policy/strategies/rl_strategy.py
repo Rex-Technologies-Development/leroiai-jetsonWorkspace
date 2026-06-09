@@ -26,7 +26,7 @@ class RLStrategy(Strategy):
         self.intra_op_num_threads = int(cfg.get("intra_op_num_threads", 1))
         self.obs_dim_override = int(cfg.get("obs_dim_override", 0))
         self.max_blocks = int(cfg.get("max_blocks", 10))
-        self.field_size_cm = float(cfg.get("field_size_cm", 365.76))
+        self.field_size_in = float(cfg.get("field_size_in", 144.0))
         self.onnx_providers = self._resolve_providers(str(cfg.get("onnx_providers", "CPUExecutionProvider")))
         self.action_id_map = self._parse_action_id_map(str(cfg.get("action_id_map", "")))
 
@@ -103,7 +103,7 @@ class RLStrategy(Strategy):
             heading = math.radians(state.robot_heading_deg)
             sin_h, cos_h = math.sin(heading), math.cos(heading)
             valid = 1.0
-        feats += [rx / self.field_size_cm, ry / self.field_size_cm, sin_h, cos_h, valid]
+        feats += [rx / self.field_size_in, ry / self.field_size_in, sin_h, cos_h, valid]
 
         blocks = list(state.blocks)
         if valid:
@@ -115,8 +115,8 @@ class RLStrategy(Strategy):
                 name = b["class_name"].lower()
                 feats += [
                     1.0,
-                    b["x"] / self.field_size_cm,
-                    b["y"] / self.field_size_cm,
+                    b["x"] / self.field_size_in,
+                    b["y"] / self.field_size_in,
                     1.0 if "blue" in name else 0.0,
                     1.0 if "red" in name else 0.0,
                     1.0 if "in_goal" in name else 0.0,

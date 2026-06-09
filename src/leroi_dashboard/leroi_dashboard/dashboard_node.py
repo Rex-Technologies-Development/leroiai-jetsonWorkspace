@@ -39,13 +39,13 @@ class DashboardNode(Node):
         self.declare_parameter("sync_rate_hz", 2.0)
         self.declare_parameter("reconnect_period_sec", 5.0)
         self.declare_parameter("connect_log_interval_sec", 60.0)
-        self.declare_parameter("field_cm_to_dashboard", 1.0)
+        self.declare_parameter("field_in_to_dashboard", 1.0)
         self.declare_parameter("send_all_field_detections", True)
         self.declare_parameter("block_class_substrings", ["block", "red", "blue"])
         self.declare_parameter("object_history_sec", 3.0)
-        self.declare_parameter("camera_offset_x_cm", 0.0)
-        self.declare_parameter("camera_offset_y_cm", 15.0)
-        self.declare_parameter("camera_offset_z_cm", 25.0)
+        self.declare_parameter("camera_offset_x_in", 0.0)
+        self.declare_parameter("camera_offset_y_in", 5.91)
+        self.declare_parameter("camera_offset_z_in", 9.84)
         self.declare_parameter("enable_robot_channel", True)
         self.declare_parameter("enable_blocks_channel", True)
         self.declare_parameter("enable_camera_channel", True)
@@ -74,8 +74,8 @@ class DashboardNode(Node):
         self.connect_log_interval_sec = float(
             self.get_parameter("connect_log_interval_sec").value
         )
-        self.field_cm_to_dashboard = float(
-            self.get_parameter("field_cm_to_dashboard").value
+        self.field_in_to_dashboard = float(
+            self.get_parameter("field_in_to_dashboard").value
         )
         self.send_all_field_detections = bool(
             self.get_parameter("send_all_field_detections").value
@@ -86,14 +86,14 @@ class DashboardNode(Node):
         self.object_history_sec = float(
             self.get_parameter("object_history_sec").value
         )
-        self.camera_offset_x_cm = float(
-            self.get_parameter("camera_offset_x_cm").value
+        self.camera_offset_x_in = float(
+            self.get_parameter("camera_offset_x_in").value
         )
-        self.camera_offset_y_cm = float(
-            self.get_parameter("camera_offset_y_cm").value
+        self.camera_offset_y_in = float(
+            self.get_parameter("camera_offset_y_in").value
         )
-        self.camera_offset_z_cm = float(
-            self.get_parameter("camera_offset_z_cm").value
+        self.camera_offset_z_in = float(
+            self.get_parameter("camera_offset_z_in").value
         )
         self.enable_robot_channel = bool(
             self.get_parameter("enable_robot_channel").value
@@ -249,8 +249,8 @@ class DashboardNode(Node):
             return
 
         pose = {
-            "x": float(packet["x"]) * self.field_cm_to_dashboard,
-            "y": float(packet["y"]) * self.field_cm_to_dashboard,
+            "x": float(packet["x"]) * self.field_in_to_dashboard,
+            "y": float(packet["y"]) * self.field_in_to_dashboard,
             "heading_deg": float(packet.get("heading", 0.0)),
         }
 
@@ -308,16 +308,16 @@ class DashboardNode(Node):
         blocks: list[dict[str, Any]] = []
 
         for obj in objects:
-            x_field_cm = obj.get("x_field_cm", obj.get("x"))
-            y_field_cm = obj.get("y_field_cm", obj.get("y"))
-            if x_field_cm is None or y_field_cm is None:
+            x_field_in = obj.get("x_field_in", obj.get("x"))
+            y_field_in = obj.get("y_field_in", obj.get("y"))
+            if x_field_in is None or y_field_in is None:
                 continue
 
             try:
-                x_field = float(x_field_cm)
-                y_field = float(y_field_cm)
-                x = x_field * self.field_cm_to_dashboard
-                y = y_field * self.field_cm_to_dashboard
+                x_field = float(x_field_in)
+                y_field = float(y_field_in)
+                x = x_field * self.field_in_to_dashboard
+                y = y_field * self.field_in_to_dashboard
                 if not (math.isfinite(x) and math.isfinite(y)):
                     continue
             except (TypeError, ValueError):
@@ -349,8 +349,8 @@ class DashboardNode(Node):
             if confidence is not None:
                 entry["confidence"] = confidence
 
-            entry["x_field_cm"] = round(x_field, 1)
-            entry["y_field_cm"] = round(y_field, 1)
+            entry["x_field_in"] = round(x_field, 1)
+            entry["y_field_in"] = round(y_field, 1)
 
             blocks.append(entry)
 
@@ -425,21 +425,21 @@ class DashboardNode(Node):
         detection: dict[str, Any],
         robot_pose: dict[str, float],
     ) -> Optional[tuple[float, float]]:
-        x_cm = detection.get("x_cm")
-        z_cm = detection.get("z_cm")
-        if x_cm is None or z_cm is None:
+        x_in = detection.get("x_in")
+        z_in = detection.get("z_in")
+        if x_in is None or z_in is None:
             return None
 
         try:
-            x_cam = float(x_cm)
-            z_cam = float(z_cm)
+            x_cam = float(x_in)
+            z_cam = float(z_in)
             if not (math.isfinite(x_cam) and math.isfinite(z_cam)):
                 return None
         except (TypeError, ValueError):
             return None
 
-        local_right_cm = self.camera_offset_x_cm + x_cam
-        local_forward_cm = self.camera_offset_y_cm + z_cam
+        local_right_in = self.camera_offset_x_in + x_cam
+        local_forward_in = self.camera_offset_y_in + z_cam
         heading_rad = math.radians(robot_pose["heading_deg"])
 
         forward_x = math.sin(heading_rad)
@@ -449,13 +449,13 @@ class DashboardNode(Node):
 
         x_field = (
             robot_pose["x"]
-            + local_forward_cm * forward_x
-            + local_right_cm * right_x
+            + local_forward_in * forward_x
+            + local_right_in * right_x
         )
         y_field = (
             robot_pose["y"]
-            + local_forward_cm * forward_y
-            + local_right_cm * right_y
+            + local_forward_in * forward_y
+            + local_right_in * right_y
         )
 
         if not (math.isfinite(x_field) and math.isfinite(y_field)):
@@ -486,17 +486,17 @@ class DashboardNode(Node):
                 skipped_count += 1
                 continue
 
-            x_field_cm = detection.get("x_field_cm")
-            y_field_cm = detection.get("y_field_cm")
+            x_field_in = detection.get("x_field_in")
+            y_field_in = detection.get("y_field_in")
 
-            if x_field_cm is None or y_field_cm is None:
+            if x_field_in is None or y_field_in is None:
                 if robot_pose is not None:
                     projected = self.project_detection_to_field(
                         detection,
                         robot_pose,
                     )
                     if projected is not None:
-                        x_field_cm, y_field_cm = projected
+                        x_field_in, y_field_in = projected
                         projected_count += 1
                     else:
                         skipped_count += 1
@@ -508,10 +508,10 @@ class DashboardNode(Node):
                 with_field_count += 1
 
             try:
-                x_field = float(x_field_cm)
-                y_field = float(y_field_cm)
-                x = x_field * self.field_cm_to_dashboard
-                y = y_field * self.field_cm_to_dashboard
+                x_field = float(x_field_in)
+                y_field = float(y_field_in)
+                x = x_field * self.field_in_to_dashboard
+                y = y_field * self.field_in_to_dashboard
                 if not (math.isfinite(x) and math.isfinite(y)):
                     skipped_count += 1
                     continue

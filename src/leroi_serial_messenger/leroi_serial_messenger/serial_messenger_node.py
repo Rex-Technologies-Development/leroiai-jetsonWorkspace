@@ -401,24 +401,24 @@ class SerialMessengerNode(Node):
                 continue
 
             name = det.get("class_name", det.get("class", "?"))
-            z_cm = det.get("z_cm")
-            x_cm = det.get("x_cm")
+            z_in = det.get("z_in")
+            x_in = det.get("x_in")
             conf = float(det.get("confidence", det.get("conf", 0.0)))
 
-            if z_cm is None:
+            if z_in is None:
                 continue
 
             try:
-                z_cm = float(z_cm)
-                x_cm = float(x_cm) if x_cm is not None else None
+                z_in = float(z_in)
+                x_in = float(x_in) if x_in is not None else None
             except (ValueError, TypeError):
                 continue
 
             payload = {
                 "type": "DETECTION",
                 "class": name,
-                "z_cm": round(z_cm, 1),
-                "x_cm": round(x_cm, 1) if x_cm is not None else None,
+                "z_in": round(z_in, 1),
+                "x_in": round(x_in, 1) if x_in is not None else None,
                 "conf": round(conf, 2),
             }
 

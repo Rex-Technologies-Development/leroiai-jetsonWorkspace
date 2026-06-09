@@ -94,6 +94,11 @@ def generate_launch_description():
                 "enable_yolo": True,
                 "yolo_rate_hz": 15.0,
                 "yolo_model_path": YOLO_MODEL_PATH,
+                # Map YOLO class ids -> color-bearing names so the route planner's
+                # color filter (looks for "blue"/"red" in class_name) works. Without
+                # this, detections come out as "class0"/"class2" and no candidates
+                # are ever produced -> NO_ROUTE.
+                "yolo_class_names": '{"0": "blue_block", "1": "blue_block_in_goal", "2": "red_block", "3": "red_block_in_goal"}',
                 "yolo_confidence": 0.35,
                 "yolo_image_size": 320,
                 "yolo_device": "0",
@@ -105,10 +110,10 @@ def generate_launch_description():
                 "enable_map_stream": True,
                 "map_width_px": 700,
                 "map_height_px": 700,
-                "field_min_x_cm": 0.0,
-                "field_max_x_cm": 365.76,
-                "field_min_y_cm": 0.0,
-                "field_max_y_cm": 365.76,
+                "field_min_x_in": 0.0,
+                "field_max_x_in": 144.0,
+                "field_min_y_in": 0.0,
+                "field_max_y_in": 144.0,
                 "field_map_image_path": FIELD_MAP_PATH,
                 "field_map_rotation": "cw",
                 "field_map_alpha": 0.72,
@@ -117,9 +122,9 @@ def generate_launch_description():
                 "object_history_sec": 3.0,
                 "target_path_topic": "/robot/command",
                 "action_ack_topic": "/robot/action_ack",
-                "camera_offset_x_cm": -0.635,  # camera mounted 0.25in left of robot center
-                "camera_offset_y_cm": 15.0,
-                "camera_offset_z_cm": 25.0,
+                "camera_offset_x_in": -0.25,  # camera mounted 0.25in left of robot center
+                "camera_offset_y_in": 5.91,
+                "camera_offset_z_in": 9.84,
                 "enable_goal_view": False,
             }
         ],
@@ -171,13 +176,16 @@ def generate_launch_description():
                 "scan_point_red_json": "",
                 "collect_fallback_blue_json": "",
                 "collect_fallback_red_json": "",
-                # Goal-state assessment (regions in field cm). TODO: set real goals.
+                # Goal-state assessment (regions in field in). TODO: set real goals.
                 "goal_regions_json": "",
                 "goal_color_margin": 1,
                 "goal_empty_max": 1,
                 "goal_full_min": 4,
-                # Collect routing + left-half zone for the 24in robot.
+                # Collect routing + half-of-field zone. Defaults keep the 24in
+                # robot on the LEFT half (x in [0, 72]); for the 15in robot run
+                # with zone_x_min_in:=72 zone_x_max_in:=144 (RIGHT half).
                 "use_route_planner_for_collect": True,
+                "zone_x_min_in": LaunchConfiguration("zone_x_min_in"),
                 "zone_x_max_in": LaunchConfiguration("zone_x_max_in"),
                 "zone_x_wander_in": 12.0,
 
@@ -186,13 +194,13 @@ def generate_launch_description():
                 "require_confirmation": LaunchConfiguration("require_confirmation"),
                 "respect_decision_busy": True,
                 "max_blocks": 10,
-                "field_size_cm": 365.76,
+                "field_size_in": 144.0,
             }
         ],
     )
 
     # Route planner: produces COLLECT_BLOCKS routes the scripted strategy consumes.
-    # pickup_x_max_cm keeps the 24in robot on the LEFT half (72in -> 182.88cm)
+    # pickup_x_max_in keeps the 24in robot on the LEFT half (72in)
     # so it does not impede the 15in robot on the right.
     route_planner = Node(
         package="leroi_perception",
@@ -209,29 +217,37 @@ def generate_launch_description():
                 "route_rate_hz": 3.0,
                 "stale_detection_timeout_sec": 1.0,
                 "stale_odom_timeout_sec": 1.0,
-                "field_min_x_cm": 0.0,
-                "field_max_x_cm": 365.76,
-                "field_min_y_cm": 0.0,
-                "field_max_y_cm": 365.76,
-                # Left-half pickup zone for the 24in robot (cm).
-                "pickup_x_min_cm": 0.0,
-                "pickup_x_max_cm": LaunchConfiguration("pickup_x_max_cm"),
+                "field_min_x_in": 0.0,
+                "field_max_x_in": 144.0,
+                "field_min_y_in": 0.0,
+                "field_max_y_in": 144.0,
+                # Half-of-field pickup zone. Defaults = LEFT half for the 24in
+                # robot ([0, 72]); flip with pickup_x_min_in:=72 pickup_x_max_in:=144
+                # for the 15in robot (RIGHT half).
+                "pickup_x_min_in": LaunchConfiguration("pickup_x_min_in"),
+                "pickup_x_max_in": LaunchConfiguration("pickup_x_max_in"),
                 "max_route_points": 5,
                 "max_carry_blocks": 5,
                 "already_held_blocks": 0,
                 "min_confidence": 0.35,
-                "wall_margin_cm": 45.0,
-                "cluster_dist_cm": 90.0,
-                "cluster_pickup_dist_cm": 38.0,
-                "min_route_value": 0.015,
+                "wall_margin_in": 17.72,
+                "cluster_dist_in": 35.43,
+                "cluster_pickup_dist_in": 14.96,
+                "min_route_value": 0.0381,
                 "skip_near_goals": True,
-                "center_goal_skip_radius_cm": 65.0,
-                "long_goal_y_min_cm": 115.0,
-                "long_goal_y_max_cm": 250.0,
-                "long_goal_x_margin_cm": 75.0,
-                "top_bottom_goal_x_min_cm": 120.0,
-                "top_bottom_goal_x_max_cm": 246.0,
-                "top_bottom_goal_y_margin_cm": 55.0,
+                # Center X: 22in diameter (radius 11), 5in-thick diagonal bars.
+                "center_x_radius_in": 11.0,
+                "center_x_thickness_in": 5.0,
+                # Long goal = measured rectangle (corners 21,48 - 27,96); right
+                # side mirrored automatically across field center-x -> [117,123].
+                "long_goal_x_min_in": 21.0,
+                "long_goal_x_max_in": 27.0,
+                "long_goal_y_min_in": 48.0,
+                "long_goal_y_max_in": 96.0,
+                "goal_skip_pad_in": 0.0,
+                "top_bottom_goal_x_min_in": 47.24,
+                "top_bottom_goal_x_max_in": 96.85,
+                "top_bottom_goal_y_margin_in": 21.65,
                 "publish_empty_route": True,
                 "debug_log_routes": True,
             }
@@ -251,14 +267,24 @@ def generate_launch_description():
                 description="Alliance for the scripted strategy: blue or red",
             ),
             DeclareLaunchArgument(
-                "zone_x_max_in",
-                default_value="72.0",
-                description="Soft left-half limit (inches) for the 24in robot's waypoints",
+                "zone_x_min_in",
+                default_value="0.0",
+                description="Soft min-x (in) for waypoints. 0 for the LEFT (24in) robot; 72 for the RIGHT (15in) robot",
             ),
             DeclareLaunchArgument(
-                "pickup_x_max_cm",
-                default_value="182.88",  # 72 in
-                description="Route planner: max block-pickup x (cm); keeps 24in robot left",
+                "zone_x_max_in",
+                default_value="72.0",
+                description="Soft max-x (in) for waypoints. 72 for the LEFT (24in) robot; 144 for the RIGHT (15in) robot",
+            ),
+            DeclareLaunchArgument(
+                "pickup_x_min_in",
+                default_value="0.0",
+                description="Route planner min block-pickup x (in). 0 for LEFT (24in); 72 for RIGHT (15in)",
+            ),
+            DeclareLaunchArgument(
+                "pickup_x_max_in",
+                default_value="72.0",  # 72 in = field center
+                description="Route planner max block-pickup x (in). 72 for LEFT (24in); 144 for RIGHT (15in)",
             ),
             DeclareLaunchArgument(
                 "policy_model_path",

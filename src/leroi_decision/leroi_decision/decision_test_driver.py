@@ -12,25 +12,25 @@ from std_msgs.msg import String
 # 2) MOVE_CHASSIS_ONLY (action_id 1) to a second target point.
 # 3) COLLECT_BLOCKS (action_id 2) with a bunch of target points.
 #
-# Field is 365.76 cm x 365.76 cm, origin bottom-left.
+# Field is 144 in x 144 in, origin bottom-left.
 DEFAULT_SEQUENCE: List[Dict[str, Any]] = [
     {
         "action_id": 1,
-        "points": [{"x": 120.0, "y": 90.0, "heading": 0.0}],
+        "points": [{"x": 47.2, "y": 35.4, "heading": 0.0}],
         "params": {"label": "move_to_point_1"},
     },
     {
         "action_id": 1,
-        "points": [{"x": 240.0, "y": 180.0, "heading": 90.0}],
+        "points": [{"x": 94.5, "y": 70.9, "heading": 90.0}],
         "params": {"label": "move_to_point_2"},
     },
     {
         "action_id": 2,
         "points": [
-            {"x": 250.0, "y": 200.0, "heading": 90.0},
-            {"x": 270.0, "y": 220.0, "heading": 45.0},
-            {"x": 290.0, "y": 240.0, "heading": 0.0},
-            {"x": 300.0, "y": 260.0, "heading": -45.0},
+            {"x": 98.4, "y": 78.7, "heading": 90.0},
+            {"x": 106.3, "y": 86.6, "heading": 45.0},
+            {"x": 114.2, "y": 94.5, "heading": 0.0},
+            {"x": 118.1, "y": 102.4, "heading": -45.0},
         ],
         "params": {"label": "collect_blocks_run"},
     },

@@ -35,7 +35,7 @@ class PerceptionNode(Node):
       - Draw camera preview and top-down field map on port 8080.
 
     Coordinate convention for map:
-      - Field is 365.76 cm x 365.76 cm.
+      - Field is 144 in x 144 in.
       - (0, 0) is bottom-left of the displayed field map.
       - +X is right.
       - +Y is up/forward.
@@ -85,11 +85,11 @@ class PerceptionNode(Node):
         self.declare_parameter("map_width_px", 700)
         self.declare_parameter("map_height_px", 700)
 
-        # 12 ft x 12 ft VEX field = 365.76 cm x 365.76 cm
-        self.declare_parameter("field_min_x_cm", 0.0)
-        self.declare_parameter("field_max_x_cm", 365.76)
-        self.declare_parameter("field_min_y_cm", 0.0)
-        self.declare_parameter("field_max_y_cm", 365.76)
+        # 12 ft x 12 ft VEX field = 144 in x 144 in
+        self.declare_parameter("field_min_x_in", 0.0)
+        self.declare_parameter("field_max_x_in", 144.0)
+        self.declare_parameter("field_min_y_in", 0.0)
+        self.declare_parameter("field_max_y_in", 144.0)
 
         self.declare_parameter(
             "field_map_image_path",
@@ -116,9 +116,9 @@ class PerceptionNode(Node):
 
         # Robot/camera transform.
         # x = camera offset to robot right, y = camera offset forward from robot center.
-        self.declare_parameter("camera_offset_x_cm", 0.0)
-        self.declare_parameter("camera_offset_y_cm", 15.0)
-        self.declare_parameter("camera_offset_z_cm", 25.0)
+        self.declare_parameter("camera_offset_x_in", 0.0)
+        self.declare_parameter("camera_offset_y_in", 5.91)
+        self.declare_parameter("camera_offset_z_in", 9.84)
 
         # Downward pitch of the camera in degrees (0 = looking straight ahead).
         # Used to rotate the optical-axis depth into a horizontal ground distance.
@@ -129,8 +129,8 @@ class PerceptionNode(Node):
         # NOT (0,0): that is the field corner, where balls to the side project
         # out of bounds and get filtered. Default to bottom-center facing +Y.
         self.declare_parameter("assume_origin_when_no_odom", True)
-        self.declare_parameter("assumed_start_x_cm", 182.88)
-        self.declare_parameter("assumed_start_y_cm", 30.0)
+        self.declare_parameter("assumed_start_x_in", 72.0)
+        self.declare_parameter("assumed_start_y_in", 11.81)
         self.declare_parameter("assumed_start_heading_deg", 0.0)
 
         # Goal view stays disabled for now.
@@ -186,10 +186,10 @@ class PerceptionNode(Node):
         self.map_width_px = int(self.get_parameter("map_width_px").value)
         self.map_height_px = int(self.get_parameter("map_height_px").value)
 
-        self.field_min_x_cm = float(self.get_parameter("field_min_x_cm").value)
-        self.field_max_x_cm = float(self.get_parameter("field_max_x_cm").value)
-        self.field_min_y_cm = float(self.get_parameter("field_min_y_cm").value)
-        self.field_max_y_cm = float(self.get_parameter("field_max_y_cm").value)
+        self.field_min_x_in = float(self.get_parameter("field_min_x_in").value)
+        self.field_max_x_in = float(self.get_parameter("field_max_x_in").value)
+        self.field_min_y_in = float(self.get_parameter("field_min_y_in").value)
+        self.field_max_y_in = float(self.get_parameter("field_max_y_in").value)
 
         self.field_map_image_path = os.path.expanduser(
             str(self.get_parameter("field_map_image_path").value)
@@ -214,14 +214,14 @@ class PerceptionNode(Node):
         self.target_path_topic = str(self.get_parameter("target_path_topic").value)
         self.action_ack_topic = str(self.get_parameter("action_ack_topic").value)
 
-        self.camera_offset_x_cm = float(
-            self.get_parameter("camera_offset_x_cm").value
+        self.camera_offset_x_in = float(
+            self.get_parameter("camera_offset_x_in").value
         )
-        self.camera_offset_y_cm = float(
-            self.get_parameter("camera_offset_y_cm").value
+        self.camera_offset_y_in = float(
+            self.get_parameter("camera_offset_y_in").value
         )
-        self.camera_offset_z_cm = float(
-            self.get_parameter("camera_offset_z_cm").value
+        self.camera_offset_z_in = float(
+            self.get_parameter("camera_offset_z_in").value
         )
         self.camera_tilt_deg = float(
             self.get_parameter("camera_tilt_deg").value
@@ -229,11 +229,11 @@ class PerceptionNode(Node):
         self.assume_origin_when_no_odom = bool(
             self.get_parameter("assume_origin_when_no_odom").value
         )
-        self.assumed_start_x_cm = float(
-            self.get_parameter("assumed_start_x_cm").value
+        self.assumed_start_x_in = float(
+            self.get_parameter("assumed_start_x_in").value
         )
-        self.assumed_start_y_cm = float(
-            self.get_parameter("assumed_start_y_cm").value
+        self.assumed_start_y_in = float(
+            self.get_parameter("assumed_start_y_in").value
         )
         self.assumed_start_heading_deg = float(
             self.get_parameter("assumed_start_heading_deg").value
@@ -312,8 +312,8 @@ class PerceptionNode(Node):
 
         self.robot_pose_lock = threading.Lock()
         # Seed with the assumed start pose; overwritten once real odom arrives.
-        self.robot_x = self.assumed_start_x_cm
-        self.robot_y = self.assumed_start_y_cm
+        self.robot_x = self.assumed_start_x_in
+        self.robot_y = self.assumed_start_y_in
         self.robot_heading_deg = self.assumed_start_heading_deg
         self.has_robot_pose = False
         self.last_odom_stamp_ns = 0
@@ -470,11 +470,11 @@ class PerceptionNode(Node):
         if self.yolo_rate_hz <= 0.0:
             raise ValueError("yolo_rate_hz must be greater than 0")
 
-        if self.field_max_x_cm <= self.field_min_x_cm:
-            raise ValueError("field_max_x_cm must be greater than field_min_x_cm")
+        if self.field_max_x_in <= self.field_min_x_in:
+            raise ValueError("field_max_x_in must be greater than field_min_x_in")
 
-        if self.field_max_y_cm <= self.field_min_y_cm:
-            raise ValueError("field_max_y_cm must be greater than field_min_y_cm")
+        if self.field_max_y_in <= self.field_min_y_in:
+            raise ValueError("field_max_y_in must be greater than field_min_y_in")
 
         if self.map_width_px <= 0 or self.map_height_px <= 0:
             raise ValueError("map_width_px/map_height_px must be positive")
@@ -763,22 +763,22 @@ class PerceptionNode(Node):
                         robot_heading_deg=robot_heading_deg,
                     )
 
-                x_cm = d.get("x_cm")
-                z_cm = d.get("z_cm")
-                x_field_cm = d.get("x_field_cm")
-                y_field_cm = d.get("y_field_cm")
+                x_in = d.get("x_in")
+                z_in = d.get("z_in")
+                x_field_in = d.get("x_field_in")
+                y_field_in = d.get("y_field_in")
 
                 packet_detection = {
                     "class": d.get("class_name"),
                     "class_name": d.get("class_name"),
                     "class_id": d.get("class_id"),
-                    "x_cm": round(float(x_cm), 1) if x_cm is not None else None,
-                    "z_cm": round(float(z_cm), 1) if z_cm is not None else None,
-                    "x_field_cm": round(float(x_field_cm), 1)
-                    if x_field_cm is not None
+                    "x_in": round(float(x_in), 1) if x_in is not None else None,
+                    "z_in": round(float(z_in), 1) if z_in is not None else None,
+                    "x_field_in": round(float(x_field_in), 1)
+                    if x_field_in is not None
                     else None,
-                    "y_field_cm": round(float(y_field_cm), 1)
-                    if y_field_cm is not None
+                    "y_field_in": round(float(y_field_in), 1)
+                    if y_field_in is not None
                     else None,
                     "conf": round(float(d.get("confidence", 0.0)), 2),
                     "confidence": float(d.get("confidence", 0.0)),
@@ -835,9 +835,9 @@ class PerceptionNode(Node):
         Convert camera-relative object coordinates to field coordinates.
 
         yolo_detector.detect_3d gives the object in the (tilted) camera frame:
-          x_cm = object right of camera
-          y_cm = object below the optical axis (image-down is positive)
-          z_cm = object forward along the optical axis
+          x_in = object right of camera
+          y_in = object below the optical axis (image-down is positive)
+          z_in = object forward along the optical axis
 
         The camera is pitched down by camera_tilt_deg, so the optical-axis depth
         is NOT the horizontal ground distance. We rotate the (y, z) pair by the
@@ -849,18 +849,18 @@ class PerceptionNode(Node):
         Robot heading convention:
           0 deg = facing +Y on field.
         """
-        x_cm = detection.get("x_cm")
-        z_cm = detection.get("z_cm")
+        x_in = detection.get("x_in")
+        z_in = detection.get("z_in")
 
-        if x_cm is None or z_cm is None:
+        if x_in is None or z_in is None:
             return
 
         try:
-            x_cam = float(x_cm)
-            z_cam = float(z_cm)
+            x_cam = float(x_in)
+            z_cam = float(z_in)
 
-            y_cm = detection.get("y_cm")
-            y_cam = float(y_cm) if y_cm is not None else 0.0
+            y_in = detection.get("y_in")
+            y_cam = float(y_in) if y_in is not None else 0.0
 
             if not (
                 math.isfinite(x_cam)
@@ -875,10 +875,10 @@ class PerceptionNode(Node):
         # Rotate out the camera's downward pitch to get the horizontal forward
         # distance on the ground plane.
         tilt_rad = math.radians(self.camera_tilt_deg)
-        forward_horizontal_cm = z_cam * math.cos(tilt_rad) - y_cam * math.sin(tilt_rad)
+        forward_horizontal_in = z_cam * math.cos(tilt_rad) - y_cam * math.sin(tilt_rad)
 
-        local_right_cm = self.camera_offset_x_cm + x_cam
-        local_forward_cm = self.camera_offset_y_cm + forward_horizontal_cm
+        local_right_in = self.camera_offset_x_in + x_cam
+        local_forward_in = self.camera_offset_y_in + forward_horizontal_in
 
         heading_rad = math.radians(robot_heading_deg)
 
@@ -888,34 +888,34 @@ class PerceptionNode(Node):
         right_x = math.cos(heading_rad)
         right_y = -math.sin(heading_rad)
 
-        x_field = robot_x + local_forward_cm * forward_x + local_right_cm * right_x
-        y_field = robot_y + local_forward_cm * forward_y + local_right_cm * right_y
+        x_field = robot_x + local_forward_in * forward_x + local_right_in * right_x
+        y_field = robot_y + local_forward_in * forward_y + local_right_in * right_y
 
-        detection["x_field_cm"] = x_field
-        detection["y_field_cm"] = y_field
+        detection["x_field_in"] = x_field
+        detection["y_field_in"] = y_field
 
-    def world_to_map_px(self, x_cm: float, y_cm: float) -> Tuple[int, int]:
+    def world_to_map_px(self, x_in: float, y_in: float) -> Tuple[int, int]:
         u = int(
-            (x_cm - self.field_min_x_cm)
-            / (self.field_max_x_cm - self.field_min_x_cm)
+            (x_in - self.field_min_x_in)
+            / (self.field_max_x_in - self.field_min_x_in)
             * self.map_width_px
         )
 
         v = int(
             self.map_height_px
             - (
-                (y_cm - self.field_min_y_cm)
-                / (self.field_max_y_cm - self.field_min_y_cm)
+                (y_in - self.field_min_y_in)
+                / (self.field_max_y_in - self.field_min_y_in)
                 * self.map_height_px
             )
         )
 
         return u, v
 
-    def in_field_bounds(self, x_cm: float, y_cm: float) -> bool:
+    def in_field_bounds(self, x_in: float, y_in: float) -> bool:
         return (
-            self.field_min_x_cm <= x_cm <= self.field_max_x_cm
-            and self.field_min_y_cm <= y_cm <= self.field_max_y_cm
+            self.field_min_x_in <= x_in <= self.field_max_x_in
+            and self.field_min_y_in <= y_in <= self.field_max_y_in
         )
 
     def publish_mapped_objects(self, stamp_ns: int):
@@ -930,8 +930,8 @@ class PerceptionNode(Node):
             class_key = class_name.lower()
 
             try:
-                x_field = float(obj["x_field_cm"])
-                y_field = float(obj["y_field_cm"])
+                x_field = float(obj["x_field_in"])
+                y_field = float(obj["y_field_in"])
             except (KeyError, TypeError, ValueError):
                 continue
 
@@ -942,8 +942,8 @@ class PerceptionNode(Node):
                 {
                     "id": f"{class_key}-{round(x_field)}-{round(y_field)}",
                     "class_name": class_name,
-                    "x_field_cm": round(x_field, 1),
-                    "y_field_cm": round(y_field, 1),
+                    "x_field_in": round(x_field, 1),
+                    "y_field_in": round(y_field, 1),
                     "color": class_key.replace("_", " "),
                     "confidence": obj.get("confidence"),
                 }
@@ -964,8 +964,8 @@ class PerceptionNode(Node):
 
         with self.object_map_lock:
             for d in detections:
-                x_field = d.get("x_field_cm")
-                y_field = d.get("y_field_cm")
+                x_field = d.get("x_field_in")
+                y_field = d.get("y_field_in")
 
                 if x_field is None or y_field is None:
                     continue
@@ -983,8 +983,8 @@ class PerceptionNode(Node):
                     continue
 
                 class_name = str(d.get("class_name", "?"))
-                x_cm = d.get("x_cm")
-                z_cm = d.get("z_cm")
+                x_in = d.get("x_in")
+                z_in = d.get("z_in")
                 conf = float(d.get("confidence", 0.0))
                 bcx = d.get("bbox_center_x")
                 bcy = d.get("bbox_center_y")
@@ -1015,16 +1015,16 @@ class PerceptionNode(Node):
 
                 a = self.object_smooth_alpha
                 if best is not None:
-                    best["x_field_cm"] += a * (x_field - best["x_field_cm"])
-                    best["y_field_cm"] += a * (y_field - best["y_field_cm"])
+                    best["x_field_in"] += a * (x_field - best["x_field_in"])
+                    best["y_field_in"] += a * (y_field - best["y_field_in"])
                     best["bbox_center_x"] += a * (bcx - best["bbox_center_x"])
                     best["bbox_center_y"] += a * (bcy - best["bbox_center_y"])
-                    if x_cm is not None:
-                        bx = best.get("x_cm")
-                        best["x_cm"] = float(x_cm) if bx is None else bx + a * (float(x_cm) - bx)
-                    if z_cm is not None:
-                        bz = best.get("z_cm")
-                        best["z_cm"] = float(z_cm) if bz is None else bz + a * (float(z_cm) - bz)
+                    if x_in is not None:
+                        bx = best.get("x_in")
+                        best["x_in"] = float(x_in) if bx is None else bx + a * (float(x_in) - bx)
+                    if z_in is not None:
+                        bz = best.get("z_in")
+                        best["z_in"] = float(z_in) if bz is None else bz + a * (float(z_in) - bz)
                     best["confidence"] = conf
                     best["time"] = now
                     best["count"] = best.get("count", 1) + 1
@@ -1034,10 +1034,10 @@ class PerceptionNode(Node):
                             "time": now,
                             "class_name": class_name,
                             "confidence": conf,
-                            "x_cm": float(x_cm) if x_cm is not None else None,
-                            "z_cm": float(z_cm) if z_cm is not None else None,
-                            "x_field_cm": x_field,
-                            "y_field_cm": y_field,
+                            "x_in": float(x_in) if x_in is not None else None,
+                            "z_in": float(z_in) if z_in is not None else None,
+                            "x_field_in": x_field,
+                            "y_field_in": y_field,
                             "bbox_center_x": bcx,
                             "bbox_center_y": bcy,
                             "count": 1,
@@ -1272,8 +1272,8 @@ class PerceptionNode(Node):
         now = time.time()
 
         for obj in objects:
-            x = float(obj["x_field_cm"])
-            y = float(obj["y_field_cm"])
+            x = float(obj["x_field_in"])
+            y = float(obj["y_field_in"])
             age = now - float(obj["time"])
             px = self.world_to_map_px(x, y)
 
@@ -1295,8 +1295,8 @@ class PerceptionNode(Node):
 
             label = class_name[:10]
 
-            if obj.get("z_cm") is not None:
-                label += f" {float(obj['z_cm']):.0f}cm"
+            if obj.get("z_in") is not None:
+                label += f" {float(obj['z_in']):.0f}in"
 
             cv2.putText(
                 img,
@@ -1331,6 +1331,20 @@ class PerceptionNode(Node):
                     0.5,
                     route_color,
                     2,
+                )
+                # Route planner coordinates (inches) + heading (deg) at the waypoint.
+                coord_label = (
+                    f"({float(p['x']):.1f}, {float(p['y']):.1f}) "
+                    f"h{float(p.get('heading', 0.0)):.0f}"
+                )
+                cv2.putText(
+                    img,
+                    coord_label,
+                    (wp_px[0] + 11, wp_px[1] + 20),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.42,
+                    route_color,
+                    1,
                 )
 
         # Draw robot pose
@@ -1465,15 +1479,15 @@ class PerceptionNode(Node):
             color = YoloDetector.class_color(class_name)
             cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
 
-            x_cm = det.get("x_cm")
-            z_cm = det.get("z_cm")
-            x_field_cm = det.get("x_field_cm")
-            y_field_cm = det.get("y_field_cm")
+            x_in = det.get("x_in")
+            z_in = det.get("z_in")
+            x_field_in = det.get("x_field_in")
+            y_field_in = det.get("y_field_in")
 
-            if x_cm is not None and z_cm is not None:
+            if x_in is not None and z_in is not None:
                 label = (
                     f"{class_name} {confidence:.2f} "
-                    f"X:{float(x_cm):.1f} Z:{float(z_cm):.1f}cm"
+                    f"X:{float(x_in):.1f} Z:{float(z_in):.1f}in"
                 )
             else:
                 label = f"{class_name} {confidence:.2f}"
@@ -1488,9 +1502,9 @@ class PerceptionNode(Node):
                 2,
             )
 
-            if x_field_cm is not None and y_field_cm is not None:
+            if x_field_in is not None and y_field_in is not None:
                 field_label = (
-                    f"field ({float(x_field_cm):.1f}, {float(y_field_cm):.1f})"
+                    f"field ({float(x_field_in):.1f}, {float(y_field_in):.1f})"
                 )
                 cv2.putText(
                     frame,
@@ -1537,7 +1551,7 @@ class PerceptionNode(Node):
 
         if has_robot_pose:
             odom_text = (
-                f"ODOM x={robot_x:.1f}cm y={robot_y:.1f}cm h={robot_heading:.1f}deg"
+                f"ODOM x={robot_x:.1f}in y={robot_y:.1f}in h={robot_heading:.1f}deg"
             )
             odom_color = (0, 255, 0)
         else:
@@ -1585,18 +1599,18 @@ class PerceptionNode(Node):
             obj.bbox_width = float(d.get("bbox_width", 0.0))
             obj.bbox_height = float(d.get("bbox_height", 0.0))
 
-            x_cm = d.get("x_cm")
-            z_cm = d.get("z_cm")
-            x_field_cm = d.get("x_field_cm")
-            y_field_cm = d.get("y_field_cm")
+            x_in = d.get("x_in")
+            z_in = d.get("z_in")
+            x_field_in = d.get("x_field_in")
+            y_field_in = d.get("y_field_in")
 
-            obj.x_cm = float(x_cm) if x_cm is not None else float("nan")
-            obj.z_cm = float(z_cm) if z_cm is not None else float("nan")
-            obj.x_field_cm = (
-                float(x_field_cm) if x_field_cm is not None else float("nan")
+            obj.x_in = float(x_in) if x_in is not None else float("nan")
+            obj.z_in = float(z_in) if z_in is not None else float("nan")
+            obj.x_field_in = (
+                float(x_field_in) if x_field_in is not None else float("nan")
             )
-            obj.y_field_cm = (
-                float(y_field_cm) if y_field_cm is not None else float("nan")
+            obj.y_field_in = (
+                float(y_field_in) if y_field_in is not None else float("nan")
             )
 
             det_array.objects.append(obj)

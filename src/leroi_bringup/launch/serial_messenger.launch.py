@@ -144,15 +144,15 @@ def generate_launch_description():
                 "map_width_px": 700,
                 "map_height_px": 700,
 
-                # VEX field is 12 ft x 12 ft = 365.76 cm.
+                # VEX field is 12 ft x 12 ft = 144 in.
                 # Coordinate convention:
                 #   (0, 0) = bottom-left of displayed field map
                 #   +X = right
                 #   +Y = up/forward
-                "field_min_x_cm": 0.0,
-                "field_max_x_cm": 365.76,
-                "field_min_y_cm": 0.0,
-                "field_max_y_cm": 365.76,
+                "field_min_x_in": 0.0,
+                "field_max_x_in": 144.0,
+                "field_min_y_in": 0.0,
+                "field_max_y_in": 144.0,
 
                 # Field map image
                 "field_map_image_path": FIELD_MAP_PATH,
@@ -170,9 +170,9 @@ def generate_launch_description():
 
                 # Camera position relative to robot center.
                 # Tune based on actual OAK mounting.
-                "camera_offset_x_cm": -0.635,  # camera mounted 0.25in left of robot center
-                "camera_offset_y_cm": 15.0,
-                "camera_offset_z_cm": 25.0,
+                "camera_offset_x_in": -0.25,  # camera mounted 0.25in left of robot center
+                "camera_offset_y_in": 5.91,
+                "camera_offset_z_in": 9.84,
 
                 # Disable goal view for now.
                 "enable_goal_view": False,
@@ -202,10 +202,10 @@ def generate_launch_description():
                 "stale_odom_timeout_sec": 1.0,
 
                 # Field bounds
-                "field_min_x_cm": 0.0,
-                "field_max_x_cm": 365.76,
-                "field_min_y_cm": 0.0,
-                "field_max_y_cm": 365.76,
+                "field_min_x_in": 0.0,
+                "field_max_x_in": 144.0,
+                "field_min_y_in": 0.0,
+                "field_max_y_in": 144.0,
 
                 # Route limits
                 "max_route_points": 5,
@@ -214,21 +214,27 @@ def generate_launch_description():
 
                 # Filtering/scoring
                 "min_confidence": 0.35,
-                "wall_margin_cm": 45.0,
-                "cluster_dist_cm": 90.0,
-                "cluster_pickup_dist_cm": 38.0,
+                "wall_margin_in": 17.72,
+                "cluster_dist_in": 35.43,
+                "cluster_pickup_dist_in": 14.96,
                 "min_route_value": 0.015,
 
                 # Approximate no-pickup zones around field structures.
                 # Tune these after seeing real projected detections.
                 "skip_near_goals": True,
-                "center_goal_skip_radius_cm": 65.0,
-                "long_goal_y_min_cm": 115.0,
-                "long_goal_y_max_cm": 250.0,
-                "long_goal_x_margin_cm": 75.0,
-                "top_bottom_goal_x_min_cm": 120.0,
-                "top_bottom_goal_x_max_cm": 246.0,
-                "top_bottom_goal_y_margin_cm": 55.0,
+                # Center X: 22in diameter (radius 11), 5in-thick diagonal bars.
+                "center_x_radius_in": 11.0,
+                "center_x_thickness_in": 5.0,
+                # Long goal = measured rectangle (corners 21,48 - 27,96); right
+                # side mirrored automatically across field center-x -> [117,123].
+                "long_goal_x_min_in": 21.0,
+                "long_goal_x_max_in": 27.0,
+                "long_goal_y_min_in": 48.0,
+                "long_goal_y_max_in": 96.0,
+                "goal_skip_pad_in": 0.0,
+                "top_bottom_goal_x_min_in": 47.24,
+                "top_bottom_goal_x_max_in": 96.85,
+                "top_bottom_goal_y_margin_in": 21.65,
 
                 # Debug
                 "publish_empty_route": True,

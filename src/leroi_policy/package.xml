@@ -12,9 +12,9 @@
   <depend>std_msgs</depend>
   <depend>leroi_interfaces</depend>
   <depend>python3-numpy</depend>
-  <!-- onnxruntime is not packaged for rosdep; install via pip:
-       pip install --user "onnxruntime==1.17.0"  (1.17.0 works on Jetson/Tegra;
-       newer PyPI wheels crash on this CPU). -->
+  <!-- onnxruntime is not packaged for rosdep; install it via pip into the user
+       site: run "pip install onnxruntime==1.17.0" with the user flag. 1.17.0
+       works on Jetson/Tegra; newer PyPI wheels crash on this CPU. -->
   <exec_depend>python3-onnxruntime-pip</exec_depend>
 
   <test_depend>ament_copyright</test_depend>

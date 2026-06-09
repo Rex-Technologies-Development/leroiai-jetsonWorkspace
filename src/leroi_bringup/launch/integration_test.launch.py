@@ -165,10 +165,10 @@ def generate_launch_description():
                 "map_height_px": 700,
 
                 # Field bounds
-                "field_min_x_cm": 0.0,
-                "field_max_x_cm": 365.76,
-                "field_min_y_cm": 0.0,
-                "field_max_y_cm": 365.76,
+                "field_min_x_in": 0.0,
+                "field_max_x_in": 144.0,
+                "field_min_y_in": 0.0,
+                "field_max_y_in": 144.0,
                 "field_map_image_path": FIELD_MAP_PATH,
                 "field_map_rotation": "cw",
                 "field_map_alpha": 0.72,
@@ -181,9 +181,9 @@ def generate_launch_description():
                 "target_path_topic": "/robot/command",
                 "action_ack_topic": "/robot/action_ack",
 
-                "camera_offset_x_cm": -0.635,  # camera mounted 0.25in left of robot center
-                "camera_offset_y_cm": 15.0,
-                "camera_offset_z_cm": 25.0,
+                "camera_offset_x_in": -0.25,  # camera mounted 0.25in left of robot center
+                "camera_offset_y_in": 5.91,
+                "camera_offset_z_in": 9.84,
 
                 "enable_goal_view": False,
             }

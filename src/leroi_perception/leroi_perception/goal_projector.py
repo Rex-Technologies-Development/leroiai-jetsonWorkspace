@@ -11,7 +11,7 @@ class GoalProjector:
     using robot odometry + camera intrinsics + camera mount transform.
 
     Coordinate conventions:
-      - Field: X = right, Y = forward, Z = up (cm)
+      - Field: X = right, Y = forward, Z = up (in)
       - Robot: same axes, origin at robot center
       - Camera: X = right, Y = down, Z = forward (standard OpenCV)
     """
@@ -22,11 +22,11 @@ class GoalProjector:
         fy: float,
         cx: float,
         cy: float,
-        # Goal corners in FIELD coordinates (cm): [top-left, top-right, bottom-right, bottom-left]
+        # Goal corners in FIELD coordinates (in): [top-left, top-right, bottom-right, bottom-left]
         # Order must be consistent so left/right thirds are correct.
         goal_corners_world: List[Tuple[float, float, float]],
-        # Camera position relative to robot center (cm): (x_right, y_forward, z_up)
-        camera_offset_cm: Tuple[float, float, float] = (0.0, 0.0, 20.0),
+        # Camera position relative to robot center (in): (x_right, y_forward, z_up)
+        camera_offset_in: Tuple[float, float, float] = (0.0, 0.0, 7.87),
         # Camera tilt downward from horizontal (degrees, positive = tilting down)
         camera_tilt_deg: float = 0.0,
     ):
@@ -39,9 +39,9 @@ class GoalProjector:
         self.goal_corners_world = np.array(goal_corners_world, dtype=np.float64)
 
         # Build camera-to-robot transform (4x4 homogeneous)
-        # Camera sits at camera_offset_cm relative to robot center,
+        # Camera sits at camera_offset_in relative to robot center,
         # facing forward (+Y robot) with optional downward tilt.
-        ox, oy, oz = camera_offset_cm
+        ox, oy, oz = camera_offset_in
         tilt = math.radians(camera_tilt_deg)
 
         # Rotation: robot +Y maps to camera +Z (forward), robot +X maps to camera +X,
@@ -212,25 +212,25 @@ class GoalProjector:
 # ---------------------------------------------------------------------------
 
 def make_vex_high_goal_corners(
-    goal_center_x_cm: float,
-    goal_center_y_cm: float,
-    goal_z_bottom_cm: float,
-    goal_width_cm: float = 61.0,   # ~24 inches
-    goal_height_cm: float = 30.0,  # adjust to match actual goal
+    goal_center_x_in: float,
+    goal_center_y_in: float,
+    goal_z_bottom_in: float,
+    goal_width_in: float = 24.02,   # ~24 inches
+    goal_height_in: float = 11.81,  # adjust to match actual goal
 ) -> List[Tuple[float, float, float]]:
     """
     Returns [top-left, top-right, bottom-right, bottom-left] corners
     of a rectangular high goal face in field coordinates.
     Assumes the goal face is parallel to the X axis (faces along Y).
     """
-    hw = goal_width_cm / 2
-    zt = goal_z_bottom_cm + goal_height_cm
-    zb = goal_z_bottom_cm
-    y  = goal_center_y_cm
+    hw = goal_width_in / 2
+    zt = goal_z_bottom_in + goal_height_in
+    zb = goal_z_bottom_in
+    y  = goal_center_y_in
 
     return [
-        (goal_center_x_cm - hw, y, zt),  # top-left
-        (goal_center_x_cm + hw, y, zt),  # top-right
-        (goal_center_x_cm + hw, y, zb),  # bottom-right
-        (goal_center_x_cm - hw, y, zb),  # bottom-left
+        (goal_center_x_in - hw, y, zt),  # top-left
+        (goal_center_x_in + hw, y, zt),  # top-right
+        (goal_center_x_in + hw, y, zb),  # bottom-right
+        (goal_center_x_in - hw, y, zb),  # bottom-left
     ]
