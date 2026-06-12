@@ -47,6 +47,10 @@ COLLECT_BLOCKS_ACTION_ID = 2
 RESET_GYRO_ACTION_ID = 24
 SCORE_ACTION_IDS = set(range(3, 11))
 
+# The full defined action space. Commands with any other action_id are rejected
+# so an undefined command can never reach the serial messenger / V5.
+KNOWN_ACTION_IDS = set(ACTION_NAMES)
+
 
 class DecisionNode(Node):
     def __init__(self):
@@ -71,6 +75,8 @@ class DecisionNode(Node):
         self.declare_parameter("allow_score_without_blocks", False)
         self.declare_parameter("block_new_action_while_waiting", True)
         self.declare_parameter("allow_stop_while_waiting", True)
+        # Reject any action_id that is not in the defined action space.
+        self.declare_parameter("reject_unknown_action_ids", True)
         # RESET_GYRO must be able to interrupt an in-flight action (robot stops,
         # stands still, ACKs) so we can recalibrate the heading mid-routine.
         self.declare_parameter("allow_gyro_reset_while_waiting", True)
@@ -109,6 +115,9 @@ class DecisionNode(Node):
         )
         self.allow_gyro_reset_while_waiting = bool(
             self.get_parameter("allow_gyro_reset_while_waiting").value
+        )
+        self.reject_unknown_action_ids = bool(
+            self.get_parameter("reject_unknown_action_ids").value
         )
 
         self.command_pub = self.create_publisher(
@@ -341,6 +350,12 @@ class DecisionNode(Node):
 
     def is_command_allowed(self, command: Dict[str, Any]):
         action_id = int(command["action_id"])
+
+        if self.reject_unknown_action_ids and action_id not in KNOWN_ACTION_IDS:
+            return (
+                False,
+                f"UNKNOWN_ACTION_ID: {action_id} is not in the defined action space",
+            )
 
         if self.waiting_for_ack:
             interrupt_allowed = (

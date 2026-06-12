@@ -11,3 +11,10 @@ __pycache__/
 .idea/
 
 .DS_Store
+
+# Per-robot test identity (size + alliance). Each robot/laptop keeps its own;
+# never pushed. See robot_config.env.example for the template.
+robot_config.env
+
+# Local route-planner review logs.
+logs/route_review.jsonl

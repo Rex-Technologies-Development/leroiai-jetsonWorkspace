@@ -112,12 +112,20 @@ class ScriptedStrategy(Strategy):
         # collect targets from raw blocks here.
         self.use_route_planner_for_collect = bool(cfg.get("use_route_planner_for_collect", True))
 
-        self._phase = Phase.SCAN
+        # When False, skip the MOVE_CHASSIS_ONLY scan step entirely: assess from
+        # wherever the robot is and loop ASSESS -> COLLECT -> SCORE -> ASSESS.
+        self.scan_before_assess = bool(cfg.get("scan_before_assess", True))
+
+        self._phase = self._home_phase()
         self._loops = 0
         self._last_assessment: Optional[str] = None
 
+    def _home_phase(self) -> str:
+        """Phase to (re)start each cycle: scan first, or straight to assess."""
+        return Phase.SCAN if self.scan_before_assess else Phase.ASSESS
+
     def reset(self) -> None:
-        self._phase = Phase.SCAN
+        self._phase = self._home_phase()
         self._loops = 0
         self._last_assessment = None
 
@@ -153,7 +161,7 @@ class ScriptedStrategy(Strategy):
             return self._assess_and_branch(state)
 
         if phase == Phase.SCORE_MIDLOW:
-            self._phase = Phase.SCAN
+            self._phase = self._home_phase()
             self._loops += 1
             return ActionProposal(
                 action_id=self.score_midlow_action_id,
@@ -164,7 +172,7 @@ class ScriptedStrategy(Strategy):
             )
 
         if phase == Phase.SCORE_LONG:
-            self._phase = Phase.SCAN
+            self._phase = self._home_phase()
             self._loops += 1
             return ActionProposal(
                 action_id=self.score_long_action_id,
@@ -174,8 +182,8 @@ class ScriptedStrategy(Strategy):
                 source="scripted:score_long",
             )
 
-        # Unknown phase: re-home to scan.
-        self._phase = Phase.SCAN
+        # Unknown phase: re-home.
+        self._phase = self._home_phase()
         return None
 
     def _assess_and_branch(self, state: GameState) -> ActionProposal:
@@ -184,8 +192,8 @@ class ScriptedStrategy(Strategy):
         self._last_assessment = classification
 
         if classification in (MOSTLY_OPPONENT, NEUTRAL_FULL):
-            # Go remove opponent blocks; then back to scan.
-            self._phase = Phase.SCAN
+            # Go remove opponent blocks; then re-home.
+            self._phase = self._home_phase()
             self._loops += 1
             return ActionProposal(
                 action_id=self.descore_action_id,

@@ -85,6 +85,11 @@ class RoutePlannerNode(Node):
 
         # Alliance
         self.declare_parameter("alliance_color", "blue")
+        # YOLO class name -> color map, for models whose labels are "class0"/"class1"
+        # etc. instead of containing "blue"/"red". JSON object, e.g.
+        #   {"class0": "blue", "class1": "red", "class2": "blue", "class3": "red"}
+        # Falls back to substring matching ("blue"/"red" in the name) when empty.
+        self.declare_parameter("class_color_map", "")
 
         # Planner timing
         self.declare_parameter("route_rate_hz", 3.0)
@@ -159,6 +164,10 @@ class RoutePlannerNode(Node):
                 f"Invalid alliance_color={self.alliance_color}. Defaulting to blue."
             )
             self.alliance_color = "blue"
+
+        self.class_color_map = self._parse_class_color_map(
+            str(self.get_parameter("class_color_map").value)
+        )
 
         self.target_color = self.alliance_color
         self.opponent_color = "red" if self.alliance_color == "blue" else "blue"
@@ -607,6 +616,12 @@ class RoutePlannerNode(Node):
     def detect_color_from_class(self, class_name: str) -> Optional[str]:
         name = class_name.lower()
 
+        # Explicit class-name -> color map first (for "class0"/"class1" labels).
+        if self.class_color_map:
+            mapped = self.class_color_map.get(name)
+            if mapped in ("red", "blue"):
+                return mapped
+
         if "red" in name:
             return "red"
 
@@ -614,6 +629,21 @@ class RoutePlannerNode(Node):
             return "blue"
 
         return None
+
+    def _parse_class_color_map(self, raw: str) -> Dict[str, str]:
+        raw = (raw or "").strip()
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            self.get_logger().warning(
+                f"Invalid class_color_map '{raw}'; using substring color matching."
+            )
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        return {str(k).lower(): str(v).lower() for k, v in parsed.items()}
 
     def cluster_counts(
         self,

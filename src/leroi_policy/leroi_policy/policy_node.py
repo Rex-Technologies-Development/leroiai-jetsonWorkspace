@@ -27,6 +27,7 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 from leroi_policy.strategies import (
+    ACTION_NAMES,
     POINT_ACTIONS,
     ActionProposal,
     GameState,
@@ -34,6 +35,10 @@ from leroi_policy.strategies import (
     extract_blocks,
     make_strategy,
 )
+
+# The only action ids we will ever send. Anything else is a bug/misconfig and
+# must never reach the decision node / serial messenger / V5.
+VALID_ACTION_IDS = set(ACTION_NAMES)
 
 
 class PolicyNode(Node):
@@ -81,6 +86,8 @@ class PolicyNode(Node):
         self.declare_parameter("goal_full_min", 4)
         # Collect routing + zone.
         self.declare_parameter("use_route_planner_for_collect", True)
+        # Skip the MOVE_CHASSIS_ONLY scan step (scripted strategy) when False.
+        self.declare_parameter("scan_before_assess", True)
         # Robot half-of-field limits (inches). 24in -> left [0,72], 15in -> right
         # [72,144]. 0 -> that bound is disabled.
         self.declare_parameter("zone_x_min_in", 0.0)      # 0 -> no lower bound
@@ -89,6 +96,10 @@ class PolicyNode(Node):
         # Perception, V5/odom, and waypoints are all inches now, so this is an
         # identity scale by default. Kept as a knob in case a strategy needs it.
         self.declare_parameter("perception_to_robot_scale", 1.0)
+        # scan_score strategy: long-goal decision (class-based, no x/y).
+        self.declare_parameter("fallback_descore_then_score", True)
+        self.declare_parameter("in_goal_keywords", "goal,in_goal,scored")
+        self.declare_parameter("long_goal_capacity", 14)
 
         # --- Behavior ---
         self.declare_parameter("inference_rate_hz", 1.0)
@@ -142,10 +153,14 @@ class PolicyNode(Node):
             "goal_empty_max": int(gp("goal_empty_max").value),
             "goal_full_min": int(gp("goal_full_min").value),
             "use_route_planner_for_collect": bool(gp("use_route_planner_for_collect").value),
+            "scan_before_assess": bool(gp("scan_before_assess").value),
             "zone_x_min_in": float(gp("zone_x_min_in").value),
             "zone_x_max_in": float(gp("zone_x_max_in").value),
             "zone_x_wander_in": float(gp("zone_x_wander_in").value),
             "perception_to_robot_scale": float(gp("perception_to_robot_scale").value),
+            "fallback_descore_then_score": bool(gp("fallback_descore_then_score").value),
+            "in_goal_keywords": str(gp("in_goal_keywords").value),
+            "long_goal_capacity": int(gp("long_goal_capacity").value),
         }
 
         # --- State (latest cached perception/pose) ---
@@ -255,6 +270,15 @@ class PolicyNode(Node):
         if proposal is None:
             return
 
+        # Action-space guard: a strategy must only propose defined actions.
+        if proposal.action_id not in VALID_ACTION_IDS:
+            self.get_logger().error(
+                f"Strategy '{self.strategy.name}' proposed undefined "
+                f"action_id={proposal.action_id} (source={proposal.source}); "
+                f"refusing to propose/send it."
+            )
+            return
+
         self.pending_action = proposal
         self.waiting_for_decision = self.require_confirmation
         self._publish_pending(proposal)
@@ -291,10 +315,19 @@ class PolicyNode(Node):
     # Action output
     # ------------------------------------------------------------------ #
     def _send_action(self, proposal: ActionProposal, points: List[Dict[str, float]]):
+        action_id = int(proposal.action_id)
+
+        # Final action-space guard before anything leaves this node.
+        if action_id not in VALID_ACTION_IDS:
+            self.get_logger().error(
+                f"Refusing to send undefined action_id={action_id} "
+                f"(source={proposal.source}); not in the action space."
+            )
+            return
+
         # Operator-supplied points (at confirm) override the strategy's; otherwise
         # fall back to whatever the strategy proposed.
         effective_points = points if points else list(proposal.points)
-        action_id = int(proposal.action_id)
 
         if action_id in POINT_ACTIONS and not effective_points:
             self.get_logger().warning(

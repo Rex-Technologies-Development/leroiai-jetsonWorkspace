@@ -38,7 +38,7 @@ def generate_launch_description():
                 "heartbeat_period_sec": 5.0,
                 "status_period_sec": 2.0,
                 "debug_log_rx": False,
-                "debug_log_tx": False,
+                "debug_log_tx": True,  # print each command sent to the V5
                 "debug_log_scan": True,
                 "detection_topic": "/perception/oak_front/detections",
                 "forward_detections_to_v5": False,
@@ -167,12 +167,21 @@ def generate_launch_description():
                 # Plan: scan near parking zone -> assess goals -> descore /
                 # collect+score-midlow / collect+score-long -> back to scan.
                 "alliance_color": LaunchConfiguration("alliance_color"),
-                "score_long_action_id": 0,
-                "score_midlow_action_id": 0,
+                # Always score the LEFT long goal (action 3,
+                # SCORE_LEFT_LONG_GOAL_ALLIANCE). score_long stays 3 (blue
+                # default); the mid/low slot is pointed at 3 too so the
+                # assess branch that used to fire SCORE_MID_LEFT now scores long.
+                "score_long_action_id": 3,
+                "score_midlow_action_id": 3,
                 "descore_action_id": 0,
+                # Drop the MOVE_CHASSIS_ONLY scan step: assess from wherever the
+                # robot is and loop ASSESS -> COLLECT -> SCORE -> ASSESS.
+                "scan_before_assess": False,
                 "max_collect_targets": 3,
-                # Alliance-specific positions (inches). TODO: set real field coords.
-                "scan_point_blue_json": "",
+                # Alliance-specific positions (inches). Scan point = near the
+                # parking zone, measured on the 24in robot.
+                # TODO: set the red scan point (and confirm blue alliance).
+                "scan_point_blue_json": '[{"x": 43.0, "y": 27.0, "heading": -18.0}]',
                 "scan_point_red_json": "",
                 "collect_fallback_blue_json": "",
                 "collect_fallback_red_json": "",
@@ -258,7 +267,7 @@ def generate_launch_description():
         [
             DeclareLaunchArgument(
                 "strategy_mode",
-                default_value="rl",
+                default_value="scripted",
                 description="Policy strategy: 'rl' (ONNX model) or 'scripted' (defined plan)",
             ),
             DeclareLaunchArgument(

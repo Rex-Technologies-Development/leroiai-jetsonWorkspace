@@ -391,7 +391,39 @@ ros2 launch leroi_bringup integration_policy_test.launch.py \
 # Defined strategy (no model needed):
 ros2 launch leroi_bringup integration_policy_test.launch.py \
     strategy_mode:=scripted alliance_color:=blue
+
+# Route-planner test (dedicated launch): forward planner points to the V5 on confirm:
+ros2 launch leroi_bringup route_planner_test.launch.py alliance_color:=blue
 ```
+
+**Quick test — route planner → V5 (confirm/deny).** `route_planner_test.launch.py` is a
+self-contained launch (serial + perception + route planner + decision + policy in
+`route` mode) — a good candidate to run on startup later. It runs a minimal forwarder:
+perception → route planner → it proposes the route as a `COLLECT_BLOCKS` action (points
+converted cm→inches) and holds it for your approval. (The same is available on
+`integration_policy_test.launch.py strategy_mode:=route`.)
+
+```bash
+# See the points it wants to send (inches), and the raw planner output (cm):
+ros2 topic echo /policy/pending_action
+ros2 topic echo /perception/route_suggestion
+
+# Approve -> goes to decision -> /robot/command -> serial -> V5:
+ros2 topic pub --once /policy/decision std_msgs/String "data: 'confirm'"
+# Deny (nothing sent; it will re-propose the current route):
+ros2 topic pub --once /policy/decision std_msgs/String "data: 'cancel'"
+```
+
+On confirm, the serial messenger (with `debug_log_tx` on in this launch) prints the
+exact command sent to the V5 — `TX type=5 ... payload={"type":"ACTION","action_id":2,
+"points":[...]}` — so you can verify the points on the wire. One command is sent per
+confirm; it waits for the V5 ACK before offering the next route.
+
+**Action-space safety.** Commands are validated against the defined action space
+(`ACTION_NAMES`, ids 0–22 and 24) at two points so an undefined command can never reach
+the serial messenger / V5: the `policy_node` refuses to propose or send an unknown
+`action_id`, and the `decision_node` rejects unknown ids (`reject_unknown_action_ids`,
+default true) with `UNKNOWN_ACTION_ID` on `/decision/rejected`.
 
 The scripted strategy's waypoints/ids are parameters on `policy_node` (defaults are
 placeholders to tune to the real field):
@@ -433,10 +465,10 @@ Watch the current plan/phase + last assessment on `/policy/status`.
 - cm→inch unit conversion throughout. Everything builds; imports OK.
 
 **Missing / placeholders (NEED REAL VALUES or work):**
-- Field coordinates are placeholders: `scan_point_{blue,red}_json` and
-  `collect_fallback_{blue,red}_json` (inches), and `goal_regions_json` (cm). With
-  `goal_regions_json` empty, assessment falls back to *all detected blocks* — a rough
-  proxy, not true goal contents.
+- Field coordinates: blue scan point is set to the measured 24in-robot value
+  `(43, 27, -18°)`; still TODO: `scan_point_red_json`, `collect_fallback_{blue,red}_json`
+  (inches), and `goal_regions_json` (cm). With `goal_regions_json` empty, assessment
+  falls back to *all detected blocks* — a rough proxy, not true goal contents.
 - Mid/low goal ids defaulted (blue→7 MID_LEFT, red→8 MID_RIGHT) — confirm vs LOW (9/10).
 - Assessment thresholds (`goal_color_margin`, `goal_empty_max`, `goal_full_min`) are
   guesses; tune against real detections.

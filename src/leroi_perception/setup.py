@@ -21,6 +21,7 @@ setup(
         "console_scripts": [
             "perception_node = leroi_perception.perception_node:main",
             "route_planner_node = leroi_perception.route_planner_node:main",
+            "route_review_node = leroi_perception.route_review_node:main",
         ],
     },
 )
