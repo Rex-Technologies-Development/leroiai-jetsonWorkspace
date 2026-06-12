@@ -1,0 +1,16 @@
+[Unit]
+Description=LeRoi autonomous policy robot (default launch)
+After=network.target
+
+[Service]
+Type=simple
+User=leroi-ultio
+WorkingDirectory=/home/leroi-ultio/leroiai-jetsonWorkspace
+ExecStart=/home/leroi-ultio/leroiai-jetsonWorkspace/deploy/start_robot.sh
+Restart=on-failure
+RestartSec=3
+# Keep the V5/serial device reachable for the leroi-ultio user.
+# Add SupplementaryGroups=dialout if serial access needs it.
+
+[Install]
+WantedBy=multi-user.target

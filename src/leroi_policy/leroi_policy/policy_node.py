@@ -88,6 +88,13 @@ class PolicyNode(Node):
         self.declare_parameter("use_route_planner_for_collect", True)
         # Skip the MOVE_CHASSIS_ONLY scan step (scripted strategy) when False.
         self.declare_parameter("scan_before_assess", True)
+        # Forced demo loop (scripted): always COLLECT_BLOCKS -> SCORE_LONG, no
+        # assessment/descore. Stop after max_loops score-long cycles (0 = forever).
+        self.declare_parameter("force_collect_score_long", False)
+        self.declare_parameter("max_loops", 0)
+        # Never score the mid goal; go home to mid_goal_home_json instead.
+        self.declare_parameter("avoid_mid_goal", False)
+        self.declare_parameter("mid_goal_home_json", "")
         # Robot half-of-field limits (inches). 24in -> left [0,72], 15in -> right
         # [72,144]. 0 -> that bound is disabled.
         self.declare_parameter("zone_x_min_in", 0.0)      # 0 -> no lower bound
@@ -105,6 +112,9 @@ class PolicyNode(Node):
         self.declare_parameter("inference_rate_hz", 1.0)
         self.declare_parameter("require_confirmation", True)
         self.declare_parameter("respect_decision_busy", True)
+        # Minimum wait (seconds) after the robot goes idle before the next action
+        # is proposed/sent. Gives a deliberate pause between decisions.
+        self.declare_parameter("decision_delay_sec", 0.0)
         self.declare_parameter("max_blocks", 10)
         self.declare_parameter("field_size_in", 144.0)
 
@@ -123,6 +133,7 @@ class PolicyNode(Node):
         self.inference_rate_hz = float(gp("inference_rate_hz").value)
         self.require_confirmation = bool(gp("require_confirmation").value)
         self.respect_decision_busy = bool(gp("respect_decision_busy").value)
+        self.decision_delay_sec = float(gp("decision_delay_sec").value)
         self.max_blocks = int(gp("max_blocks").value)
         self.field_size_in = float(gp("field_size_in").value)
 
@@ -154,6 +165,10 @@ class PolicyNode(Node):
             "goal_full_min": int(gp("goal_full_min").value),
             "use_route_planner_for_collect": bool(gp("use_route_planner_for_collect").value),
             "scan_before_assess": bool(gp("scan_before_assess").value),
+            "force_collect_score_long": bool(gp("force_collect_score_long").value),
+            "max_loops": int(gp("max_loops").value),
+            "avoid_mid_goal": bool(gp("avoid_mid_goal").value),
+            "mid_goal_home_json": str(gp("mid_goal_home_json").value),
             "zone_x_min_in": float(gp("zone_x_min_in").value),
             "zone_x_max_in": float(gp("zone_x_max_in").value),
             "zone_x_wander_in": float(gp("zone_x_wander_in").value),
@@ -169,6 +184,9 @@ class PolicyNode(Node):
         self.latest_route: Optional[Dict[str, Any]] = None
         self.latest_odom: Optional[Dict[str, Any]] = None
         self.decision_waiting_for_ack = False
+        # Clock time (ns) the robot last went idle (ACK cleared). Used to enforce
+        # decision_delay_sec between consecutive actions. 0 -> no wait yet.
+        self.idle_since_ns = 0
 
         self.waiting_for_decision = False
         self.pending_action: Optional[ActionProposal] = None
@@ -228,8 +246,14 @@ class PolicyNode(Node):
 
     def decision_status_cb(self, msg: String):
         data = self._safe_json(msg.data)
-        if data is not None:
-            self.decision_waiting_for_ack = bool(data.get("waiting_for_ack", False))
+        if data is None:
+            return
+        waiting = bool(data.get("waiting_for_ack", False))
+        # Robot just went idle (finished the previous action): start the
+        # inter-decision delay clock.
+        if self.decision_waiting_for_ack and not waiting:
+            self.idle_since_ns = self.get_clock().now().nanoseconds
+        self.decision_waiting_for_ack = waiting
 
     def decision_cb(self, msg: String):
         """Operator confirm/cancel for the currently pending action."""
@@ -264,6 +288,12 @@ class PolicyNode(Node):
             return
         if self.respect_decision_busy and self.decision_waiting_for_ack:
             return
+        # Deliberate pause between decisions: once the robot has gone idle, wait
+        # decision_delay_sec before proposing/sending the next action.
+        if self.decision_delay_sec > 0.0 and self.idle_since_ns:
+            elapsed_sec = (self.get_clock().now().nanoseconds - self.idle_since_ns) / 1e9
+            if elapsed_sec < self.decision_delay_sec:
+                return
 
         state = self._build_state()
         proposal = self.strategy.propose(state)
@@ -299,6 +329,9 @@ class PolicyNode(Node):
             # Live mode: auto-run with the strategy's own points.
             self._send_action(proposal, proposal.points)
             self.pending_action = None
+            # Optimistically mark the robot busy so we don't propose again before
+            # the decision node's status catches up; the real status corrects it.
+            self.decision_waiting_for_ack = True
 
     def _build_state(self) -> GameState:
         return GameState(

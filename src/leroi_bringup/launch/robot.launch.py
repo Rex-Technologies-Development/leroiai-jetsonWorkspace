@@ -6,6 +6,13 @@ import os
 
 
 def generate_launch_description():
+    """Main robot entry point.
+
+    Delegates to the integration policy test stack (perception + serial +
+    route planner + decision + policy), which is the default on-robot run:
+    autonomous (no confirmation), forced COLLECT -> SCORE_LONG loop for 2
+    cycles, then STOP. Override any of its launch args here if needed.
+    """
     launch_dir = os.path.join(
         get_package_share_directory("leroi_bringup"),
         "launch",
@@ -15,7 +22,7 @@ def generate_launch_description():
         [
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
-                    os.path.join(launch_dir, "perception_serial.launch.py"),
+                    os.path.join(launch_dir, "integration_policy_test.launch.py"),
                 ),
             ),
         ]

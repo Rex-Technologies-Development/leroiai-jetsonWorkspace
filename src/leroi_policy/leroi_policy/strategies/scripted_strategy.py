@@ -30,6 +30,7 @@ from .actions import (
     DEFAULT_SCORE_LONG_BY_ALLIANCE,
     DEFAULT_SCORE_MIDLOW_BY_ALLIANCE,
     MOVE_CHASSIS_ONLY,
+    STOP,
     action_name,
 )
 from .base import ActionProposal, GameState, Strategy
@@ -40,6 +41,7 @@ class Phase:
     ASSESS = "assess"        # branch on goal state (emits the chosen action)
     SCORE_MIDLOW = "score_midlow"
     SCORE_LONG = "score_long"
+    DONE = "done"            # run complete: emit one STOP, then propose nothing
 
 
 # Goal-state classifications.
@@ -116,8 +118,26 @@ class ScriptedStrategy(Strategy):
         # wherever the robot is and loop ASSESS -> COLLECT -> SCORE -> ASSESS.
         self.scan_before_assess = bool(cfg.get("scan_before_assess", True))
 
+        # Forced demo loop: ignore goal assessment/descore branching and always
+        # run COLLECT_BLOCKS -> SCORE_LONG. One COLLECT+SCORE_LONG pair is a cycle.
+        self.force_collect_score_long = bool(cfg.get("force_collect_score_long", False))
+
+        # Stop after this many completed score-long cycles (0 = run forever).
+        # When reached, the strategy emits a single STOP and then proposes nothing.
+        self.max_loops = int(cfg.get("max_loops", 0))
+
+        # Never score the mid goal. When True, any time the plan would emit a
+        # SCORE_MIDLOW action we instead send the robot home to mid_goal_home and
+        # skip the mid-goal score entirely.
+        self.avoid_mid_goal = bool(cfg.get("avoid_mid_goal", False))
+        self.mid_goal_home_points = self._parse_points(
+            cfg.get("mid_goal_home_json", ""),
+            default=[{"x": 48.0, "y": 28.0, "heading": 0.0}],
+        )
+
         self._phase = self._home_phase()
         self._loops = 0
+        self._stop_sent = False
         self._last_assessment: Optional[str] = None
 
     def _home_phase(self) -> str:
@@ -127,6 +147,7 @@ class ScriptedStrategy(Strategy):
     def reset(self) -> None:
         self._phase = self._home_phase()
         self._loops = 0
+        self._stop_sent = False
         self._last_assessment = None
 
     def status(self) -> Dict[str, Any]:
@@ -135,6 +156,9 @@ class ScriptedStrategy(Strategy):
             "phase": self._phase,
             "alliance": self.alliance,
             "loops_completed": self._loops,
+            "max_loops": self.max_loops,
+            "force_collect_score_long": self.force_collect_score_long,
+            "avoid_mid_goal": self.avoid_mid_goal,
             "last_assessment": self._last_assessment,
             "score_long_action_id": self.score_long_action_id,
             "score_midlow_action_id": self.score_midlow_action_id,
@@ -147,6 +171,20 @@ class ScriptedStrategy(Strategy):
     def propose(self, state: GameState) -> Optional[ActionProposal]:
         phase = self._phase
 
+        if phase == Phase.DONE:
+            # Run complete: emit one STOP, then go quiet (propose nothing more).
+            if not self._stop_sent:
+                self._stop_sent = True
+                return ActionProposal(
+                    action_id=STOP,
+                    action_name=action_name(STOP),
+                    points=[],
+                    params={"source": "scripted", "intent": "run_complete"},
+                    source="scripted:done",
+                    info={"loops_completed": self._loops, "max_loops": self.max_loops},
+                )
+            return None
+
         if phase == Phase.SCAN:
             self._phase = Phase.ASSESS
             return ActionProposal(
@@ -158,10 +196,25 @@ class ScriptedStrategy(Strategy):
             )
 
         if phase == Phase.ASSESS:
+            if self.force_collect_score_long:
+                # Forced demo loop: skip assessment/descore, always collect then
+                # score the long goal.
+                self._phase = Phase.SCORE_LONG
+                return self._collect(state, "forced", {})
             return self._assess_and_branch(state)
 
         if phase == Phase.SCORE_MIDLOW:
             self._phase = self._home_phase()
+            if self.avoid_mid_goal:
+                # Never score the mid goal: send the robot home instead and skip
+                # the mid-goal score entirely.
+                return ActionProposal(
+                    action_id=MOVE_CHASSIS_ONLY,
+                    action_name=action_name(MOVE_CHASSIS_ONLY),
+                    points=[dict(p) for p in self.mid_goal_home_points],
+                    params={"source": "scripted", "intent": "avoid_mid_goal_home"},
+                    source="scripted:avoid_mid_goal",
+                )
             self._loops += 1
             return ActionProposal(
                 action_id=self.score_midlow_action_id,
@@ -172,8 +225,12 @@ class ScriptedStrategy(Strategy):
             )
 
         if phase == Phase.SCORE_LONG:
-            self._phase = self._home_phase()
             self._loops += 1
+            # Stop once we've completed the requested number of score-long cycles.
+            if self.max_loops > 0 and self._loops >= self.max_loops:
+                self._phase = Phase.DONE
+            else:
+                self._phase = self._home_phase()
             return ActionProposal(
                 action_id=self.score_long_action_id,
                 action_name=action_name(self.score_long_action_id),

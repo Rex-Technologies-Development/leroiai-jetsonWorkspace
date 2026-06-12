@@ -177,6 +177,14 @@ def generate_launch_description():
                 # Drop the MOVE_CHASSIS_ONLY scan step: assess from wherever the
                 # robot is and loop ASSESS -> COLLECT -> SCORE -> ASSESS.
                 "scan_before_assess": False,
+                # Forced demo loop: always COLLECT_BLOCKS -> SCORE_LONG (no goal
+                # assessment / descore), and stop after 2 score-long cycles.
+                "force_collect_score_long": True,
+                "max_loops": 2,
+                # Never score the mid goal: if the plan would, drive home to
+                # (x=48, y=28) instead and skip the mid-goal score.
+                "avoid_mid_goal": True,
+                "mid_goal_home_json": '[{"x": 48.0, "y": 28.0, "heading": 0.0}]',
                 "max_collect_targets": 3,
                 # Alliance-specific positions (inches). Scan point = near the
                 # parking zone, measured on the 24in robot.
@@ -202,6 +210,8 @@ def generate_launch_description():
                 "inference_rate_hz": LaunchConfiguration("inference_rate_hz"),
                 "require_confirmation": LaunchConfiguration("require_confirmation"),
                 "respect_decision_busy": True,
+                # Wait this long after the robot goes idle before the next action.
+                "decision_delay_sec": LaunchConfiguration("decision_delay_sec"),
                 "max_blocks": 10,
                 "field_size_in": 144.0,
             }
@@ -302,13 +312,18 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "require_confirmation",
-                default_value="true",
-                description="Hold each proposed action until confirmed on /policy/decision",
+                default_value="false",
+                description="Hold each proposed action until confirmed on /policy/decision. Default false -> run autonomously.",
             ),
             DeclareLaunchArgument(
                 "inference_rate_hz",
-                default_value="1.0",
-                description="How often the policy proposes an action when idle",
+                default_value="4.0",
+                description="How often the policy proposes an action when idle (Hz). 4 Hz keeps the inter-decision delay tight.",
+            ),
+            DeclareLaunchArgument(
+                "decision_delay_sec",
+                default_value="1.5",
+                description="Seconds to wait after the robot goes idle before sending the next action (1-2s pause between decisions)",
             ),
             serial_messenger,
             perception,
