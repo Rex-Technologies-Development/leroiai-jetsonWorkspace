@@ -157,9 +157,24 @@ class YoloDetector:
         try:
             from ultralytics import YOLO
         except ImportError as exc:
+            # Only ultralytics *itself* being absent should suggest a pip
+            # install. A failure deeper in the import chain — most commonly
+            # torch failing to load a CUDA shared lib (e.g. libcudss.so.0 from
+            # the pip nvidia-cu12 package, which is only discoverable via
+            # LD_LIBRARY_PATH) — must surface its real cause. Reporting that as
+            # "ultralytics not installed" previously sent us chasing a phantom
+            # USB/camera-enumeration bug.
+            if getattr(exc, "name", None) == "ultralytics":
+                raise RuntimeError(
+                    "ultralytics is not installed. Install it with: "
+                    "python3 -m pip install --user --no-deps ultralytics"
+                ) from exc
             raise RuntimeError(
-                "ultralytics is not installed. Install it with: "
-                "python3 -m pip install --user --no-deps ultralytics"
+                f"Failed to import ultralytics ({type(exc).__name__}: {exc}). "
+                "This is a dependency-load failure, NOT a missing ultralytics "
+                "package — typically a torch/CUDA library missing from "
+                "LD_LIBRARY_PATH (e.g. libcudss.so.0 from the nvidia-cu12 "
+                "package). Check that the CUDA lib dirs are on LD_LIBRARY_PATH."
             ) from exc
 
         if not model_path:
