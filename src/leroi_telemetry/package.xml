@@ -3,12 +3,12 @@
 <package format="3">
   <name>leroi_telemetry</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>Unified ROS 2 telemetry logger: records policy/decision/movement/perception topics to a JSONL file.</description>
   <maintainer email="leoxie080808@gmail.com">leroi-ultio</maintainer>
   <license>TODO: License declaration</license>
 
   <depend>rclpy</depend>
-  <depend>leroi_interfaces</depend>
+  <depend>std_msgs</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

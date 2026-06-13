@@ -1,5 +1,6 @@
 import json
 import math
+import os
 import queue
 import struct
 import threading
@@ -40,6 +41,21 @@ class SerialMessengerNode(Node):
         self.declare_parameter("tx_append_newline", True)
         self.declare_parameter("max_payload_bytes", 1024)
         self.declare_parameter("drop_tx_when_disconnected", True)
+
+        # --- Movement (TX) file log ---
+        # Every payload actually handed to the V5 over serial is appended here as
+        # one JSON object per line. This is the on-disk substitute for
+        # `ros2 topic echo /robot/command` when echo is not usable. Each line
+        # records the status (SENT / DROPPED / TOO_LARGE / WRITE_ERROR) so failed
+        # movements are visible too, not just successful ones.
+        self.declare_parameter(
+            "movement_log_path",
+            "~/leroiai-jetsonWorkspace/logs/jetson_movements.jsonl",
+        )
+        self.declare_parameter("movement_log_enabled", True)
+        # Heartbeats go out continuously and are not movements; skip them by
+        # default so the log stays readable.
+        self.declare_parameter("movement_log_include_heartbeat", False)
 
         self.declare_parameter("send_heartbeat", True)
         self.declare_parameter("heartbeat_period_sec", 5.0)
@@ -94,6 +110,28 @@ class SerialMessengerNode(Node):
         self.drop_tx_when_disconnected = bool(
             self.get_parameter("drop_tx_when_disconnected").value
         )
+
+        self.movement_log_enabled = bool(
+            self.get_parameter("movement_log_enabled").value
+        )
+        self.movement_log_include_heartbeat = bool(
+            self.get_parameter("movement_log_include_heartbeat").value
+        )
+        movement_log_path_raw = str(self.get_parameter("movement_log_path").value)
+        self.movement_log_path = (
+            os.path.expanduser(movement_log_path_raw)
+            if (self.movement_log_enabled and movement_log_path_raw)
+            else ""
+        )
+        if self.movement_log_path:
+            try:
+                os.makedirs(os.path.dirname(self.movement_log_path), exist_ok=True)
+            except OSError as exc:
+                self.get_logger().warning(
+                    f"Could not create movement log dir for "
+                    f"{self.movement_log_path}: {exc}. Disabling movement log."
+                )
+                self.movement_log_path = ""
 
         self.send_heartbeat = bool(self.get_parameter("send_heartbeat").value)
         self.heartbeat_period_sec = float(
@@ -247,6 +285,8 @@ class SerialMessengerNode(Node):
                 self.gyro_startup_reset_delay_sec,
                 self.startup_gyro_reset,
             )
+
+        self.log_movement_run_start()
 
         self.get_logger().info("Serial messenger node started.")
         self.get_logger().info(f"serial_port: {self.serial_port or 'auto'}")
@@ -613,6 +653,7 @@ class SerialMessengerNode(Node):
                 f"TX payload too large: {len(payload_bytes)} bytes. "
                 f"Max is {self.max_payload_bytes}. Dropping."
             )
+            self.log_movement(packet, len(payload_bytes), None, "TOO_LARGE")
             return
 
         crc = zlib.crc32(payload_bytes) & 0xFFFFFFFF
@@ -620,17 +661,24 @@ class SerialMessengerNode(Node):
         with self.serial_lock:
             if self.serial_handle is None or not self.connected:
                 self.tx_error_count += 1
+                self.log_movement(packet, len(payload_bytes), crc, "NOT_CONNECTED")
                 return
 
-            self.serial_handle.write(self.sync_bytes)
-            self.serial_handle.write(struct.pack("<h", len(payload_bytes)))
-            self.serial_handle.write(struct.pack("<h", int(packet.payload_type)))
-            self.serial_handle.write(struct.pack("<I", crc))
-            self.serial_handle.write(payload_bytes)
-            self.serial_handle.flush()
+            try:
+                self.serial_handle.write(self.sync_bytes)
+                self.serial_handle.write(struct.pack("<h", len(payload_bytes)))
+                self.serial_handle.write(struct.pack("<h", int(packet.payload_type)))
+                self.serial_handle.write(struct.pack("<I", crc))
+                self.serial_handle.write(payload_bytes)
+                self.serial_handle.flush()
+            except (serial.SerialException, OSError):
+                self.log_movement(packet, len(payload_bytes), crc, "WRITE_ERROR")
+                raise
 
         self.tx_count += 1
         self.last_tx_time = time.time()
+
+        self.log_movement(packet, len(payload_bytes), crc, "SENT")
 
         if self.debug_log_tx:
             self.get_logger().info(
@@ -640,6 +688,81 @@ class SerialMessengerNode(Node):
                 f"source={packet.source}, "
                 f"payload={packet.payload_text[:180]}"
             )
+
+    def log_movement_run_start(self):
+        """Write a RUN_START banner line so each launch is delimited in the log.
+
+        We append the movement log across runs and keep it in git, so a clear
+        per-run marker (with a timestamp) makes runs easy to find.
+        """
+        if not self.movement_log_path:
+            return
+
+        now = time.time()
+        event = {
+            "event": "RUN_START",
+            "run_started_iso": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+            "stamp_ns": self.get_clock().now().nanoseconds,
+            "time_unix": now,
+            "node": "serial_messenger_node",
+        }
+
+        try:
+            with open(self.movement_log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(event) + "\n")
+        except OSError as exc:
+            self.get_logger().warning(
+                f"Failed to write movement log run marker: {exc}"
+            )
+
+    def log_movement(self, packet: TxPacket, byte_len: int, crc, status: str):
+        """Append one JSON line describing a payload handed to the V5 over serial.
+
+        This is the on-disk replacement for ``ros2 topic echo /robot/command``.
+        ``status`` records the outcome so dropped/failed movements are logged too.
+        For ACTION payloads (movements) the command fields are pulled out into
+        top-level keys so the log is greppable without re-parsing the payload.
+        """
+        if not self.movement_log_path:
+            return
+
+        if (
+            packet.source == "heartbeat"
+            and not self.movement_log_include_heartbeat
+        ):
+            return
+
+        event = {
+            "event": "TX",
+            "status": status,
+            "stamp_ns": self.get_clock().now().nanoseconds,
+            "time_unix": time.time(),
+            "payload_type": int(packet.payload_type),
+            "source": packet.source,
+            "bytes": byte_len,
+            "crc": None if crc is None else int(crc),
+            "port": self.current_port,
+        }
+
+        # Surface movement command fields (id / action / waypoints) when present.
+        try:
+            parsed = json.loads(packet.payload_text)
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+
+        if isinstance(parsed, dict):
+            for key in ("type", "id", "action_id", "action_name", "points", "params"):
+                if key in parsed:
+                    event[key] = parsed[key]
+        else:
+            event["payload"] = packet.payload_text
+
+        try:
+            with open(self.movement_log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(event) + "\n")
+        except OSError as exc:
+            # Logging must never take down the serial IO loop.
+            self.get_logger().warning(f"Failed to write movement log: {exc}")
 
     def handle_rx_line(self, raw_line: bytes):
         self.rx_line_count += 1

@@ -15,7 +15,7 @@ setup(
     zip_safe=True,
     maintainer='leroi-ultio',
     maintainer_email='leoxie080808@gmail.com',
-    description='TODO: Package description',
+    description='Unified ROS 2 telemetry logger: records policy/decision/movement/perception topics to a JSONL file.',
     license='TODO: License declaration',
     extras_require={
         'test': [
