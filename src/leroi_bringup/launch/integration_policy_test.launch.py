@@ -1,7 +1,7 @@
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, TimerAction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -276,6 +276,13 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument(
+                "perception_start_delay_sec",
+                default_value="5.0",
+                description="Delay (s) before starting the OAK perception node, so USB camera "
+                "enumeration + CUDA are ready after a reboot. Prevents the boot-time "
+                "exit-code-1 crash. Lower if the camera comes up faster on your unit.",
+            ),
+            DeclareLaunchArgument(
                 "strategy_mode",
                 default_value="scripted",
                 description="Policy strategy: 'rl' (ONNX model) or 'scripted' (defined plan)",
@@ -326,7 +333,13 @@ def generate_launch_description():
                 description="Seconds to wait after the robot goes idle before sending the next action (1-2s pause between decisions)",
             ),
             serial_messenger,
-            perception,
+            # Delay perception so the OAK USB camera is enumerated and CUDA is
+            # ready before it opens the device. Without this, perception loses a
+            # startup race right after a Jetson reboot and dies with exit code 1.
+            TimerAction(
+                period=LaunchConfiguration("perception_start_delay_sec"),
+                actions=[perception],
+            ),
             route_planner,
             decision,
             policy,
