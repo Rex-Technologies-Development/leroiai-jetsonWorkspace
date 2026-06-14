@@ -16,6 +16,19 @@ from std_msgs.msg import String
 import serial
 import serial.tools.list_ports
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+# All log timestamps are rendered in US Eastern time, independent of the
+# machine's configured timezone, so logs stay consistent across hosts.
+_EASTERN = ZoneInfo("America/New_York")
+
+
+def eastern_iso(ts: float) -> str:
+    """Human-readable Eastern timestamp, e.g. '2026-06-13 16:50:34.733 EDT'."""
+    dt = datetime.fromtimestamp(ts, _EASTERN)
+    return dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + dt.strftime(" %Z")
+
 
 @dataclass
 class TxPacket:
@@ -700,8 +713,9 @@ class SerialMessengerNode(Node):
 
         now = time.time()
         event = {
+            "time_iso": eastern_iso(now),
             "event": "RUN_START",
-            "run_started_iso": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+            "run_started_iso": eastern_iso(now),
             "stamp_ns": self.get_clock().now().nanoseconds,
             "time_unix": now,
             "node": "serial_messenger_node",
@@ -732,11 +746,13 @@ class SerialMessengerNode(Node):
         ):
             return
 
+        now = time.time()
         event = {
+            "time_iso": eastern_iso(now),
             "event": "TX",
             "status": status,
             "stamp_ns": self.get_clock().now().nanoseconds,
-            "time_unix": time.time(),
+            "time_unix": now,
             "payload_type": int(packet.payload_type),
             "source": packet.source,
             "bytes": byte_len,

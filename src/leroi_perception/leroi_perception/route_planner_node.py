@@ -144,6 +144,18 @@ class RoutePlannerNode(Node):
         self.declare_parameter("top_bottom_goal_x_min_in", 47.24)
         self.declare_parameter("top_bottom_goal_x_max_in", 96.85)
         self.declare_parameter("top_bottom_goal_y_margin_in", 21.65)
+        # Corner exclusion: a block within corner_exclusion_margin_in of BOTH an
+        # x-wall and a y-wall (i.e. tucked in a corner) is skipped. Kept smaller
+        # than wall_margin_in so the robot can still reach most of each corner --
+        # it is only blocked from driving all the way into the corner.
+        self.declare_parameter("corner_exclusion_margin_in", 11.81)
+        # Inflate every goal exclusion rectangle about its own center by this
+        # factor before skipping blocks / testing route legs (1.15 = 15% bigger).
+        self.declare_parameter("goal_skip_scale", 1.15)
+        # Reject a route leg whose straight line from the previous point crosses
+        # any exclusion zone (goals, center X, corners, out-of-pickup-zone). The
+        # next reachable cluster is chosen instead (a longer but clear path).
+        self.declare_parameter("reject_route_through_exclusion", True)
 
         # Behavior
         self.declare_parameter("publish_empty_route", True)
@@ -223,6 +235,13 @@ class RoutePlannerNode(Node):
         )
         self.top_bottom_goal_y_margin_in = float(
             self.get_parameter("top_bottom_goal_y_margin_in").value
+        )
+        self.corner_exclusion_margin_in = float(
+            self.get_parameter("corner_exclusion_margin_in").value
+        )
+        self.goal_skip_scale = float(self.get_parameter("goal_skip_scale").value)
+        self.reject_route_through_exclusion = bool(
+            self.get_parameter("reject_route_through_exclusion").value
         )
 
         self.publish_empty_route = bool(
@@ -445,7 +464,7 @@ class RoutePlannerNode(Node):
             if not (self.pickup_x_min_in <= x <= self.pickup_x_max_in):
                 continue
 
-            if self.near_wall_count(x, y) >= 2:
+            if self.in_corner_exclusion(x, y):
                 continue
 
             if self.skip_near_goals and self.near_any_goal(x, y):
@@ -502,8 +521,7 @@ class RoutePlannerNode(Node):
         current_y = self.robot_y
 
         while len(route) < slots_left:
-            best_idx = None
-            best_value = -1.0
+            ranked = []
 
             for idx, cluster in enumerate(clusters):
                 if idx in used_cluster_indices:
@@ -512,15 +530,29 @@ class RoutePlannerNode(Node):
                 dist = math.hypot(cluster["x"] - current_x, cluster["y"] - current_y)
                 # Distance-softening constant (inches).
                 value = cluster["score"] / (dist + 19.69)
+                ranked.append((value, idx))
 
-                if value > best_value:
-                    best_value = value
-                    best_idx = idx
+            # Highest value first; once we drop below the cutoff, all remaining
+            # clusters are too (sorted), so we can stop scanning.
+            ranked.sort(key=lambda vi: vi[0], reverse=True)
 
-            if best_idx is None:
+            best_idx = None
+            for value, idx in ranked:
+                if value < self.min_route_value:
+                    break
+
+                cluster = clusters[idx]
+                # Skip any leg whose straight path crosses an exclusion zone; the
+                # next reachable cluster is taken instead (longer but clear).
+                if self.reject_route_through_exclusion and self.segment_hits_exclusion(
+                    current_x, current_y, cluster["x"], cluster["y"]
+                ):
+                    continue
+
+                best_idx = idx
                 break
 
-            if best_value < self.min_route_value:
+            if best_idx is None:
                 break
 
             cluster = clusters[best_idx]
@@ -730,6 +762,56 @@ class RoutePlannerNode(Node):
 
         return count
 
+    @staticmethod
+    def _scale_rect(
+        x0: float, y0: float, x1: float, y1: float, scale: float, pad: float = 0.0
+    ) -> Tuple[float, float, float, float]:
+        """Inflate a rectangle about its own center by ``scale``, then add ``pad``."""
+        cx = 0.5 * (x0 + x1)
+        cy = 0.5 * (y0 + y1)
+        hw = 0.5 * abs(x1 - x0) * scale + pad
+        hh = 0.5 * abs(y1 - y0) * scale + pad
+        return cx - hw, cy - hh, cx + hw, cy + hh
+
+    def goal_exclusion_rects(self) -> List[Tuple[float, float, float, float]]:
+        """The four goal exclusion rectangles, scaled by goal_skip_scale + pad.
+
+        (left long goal, right long goal mirror, bottom strip, top strip).
+        The center X cross is handled separately in near_any_goal (it is not a
+        rectangle).
+        """
+        s = self.goal_skip_scale
+        pad = self.goal_skip_pad_in
+
+        right_x_min = self.field_max_x_in - self.long_goal_x_max_in
+        right_x_max = self.field_max_x_in - self.long_goal_x_min_in
+
+        base = [
+            # Left long goal (measured rectangle).
+            (self.long_goal_x_min_in, self.long_goal_y_min_in,
+             self.long_goal_x_max_in, self.long_goal_y_max_in),
+            # Right long goal: mirror across field center-x.
+            (right_x_min, self.long_goal_y_min_in,
+             right_x_max, self.long_goal_y_max_in),
+            # Bottom horizontal goal strip (mid/low goal).
+            (self.top_bottom_goal_x_min_in, self.field_min_y_in,
+             self.top_bottom_goal_x_max_in,
+             self.field_min_y_in + self.top_bottom_goal_y_margin_in),
+            # Top horizontal goal strip (mid/low goal).
+            (self.top_bottom_goal_x_min_in,
+             self.field_max_y_in - self.top_bottom_goal_y_margin_in,
+             self.top_bottom_goal_x_max_in, self.field_max_y_in),
+        ]
+
+        return [self._scale_rect(x0, y0, x1, y1, s, pad) for (x0, y0, x1, y1) in base]
+
+    def in_corner_exclusion(self, x: float, y: float) -> bool:
+        """True if the point is tucked into a field corner (near two walls)."""
+        m = self.corner_exclusion_margin_in
+        near_x = (x < self.field_min_x_in + m) or (x > self.field_max_x_in - m)
+        near_y = (y < self.field_min_y_in + m) or (y > self.field_max_y_in - m)
+        return near_x and near_y
+
     def near_any_goal(self, x: float, y: float) -> bool:
         field_cx = 0.5 * (self.field_min_x_in + self.field_max_x_in)
         field_cy = 0.5 * (self.field_min_y_in + self.field_max_y_in)
@@ -750,36 +832,38 @@ class RoutePlannerNode(Node):
         if (p <= half_t and q <= half_len) or (q <= half_t and p <= half_len):
             return True
 
-        # Left long goal: explicit rectangle (measured corners), grown by pad.
-        if (
-            self.long_goal_x_min_in - pad <= x <= self.long_goal_x_max_in + pad
-            and self.long_goal_y_min_in - pad <= y <= self.long_goal_y_max_in + pad
-        ):
-            return True
+        # Goal rectangles (long goals + top/bottom strips), inflated by scale+pad.
+        for (x0, y0, x1, y1) in self.goal_exclusion_rects():
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                return True
 
-        # Right long goal: mirror of the left across the field center-x.
-        right_x_min = self.field_max_x_in - self.long_goal_x_max_in
-        right_x_max = self.field_max_x_in - self.long_goal_x_min_in
-        if (
-            right_x_min - pad <= x <= right_x_max + pad
-            and self.long_goal_y_min_in - pad <= y <= self.long_goal_y_max_in + pad
-        ):
-            return True
+        return False
 
-        # Bottom horizontal goal zone
-        if (
-            y < self.field_min_y_in + self.top_bottom_goal_y_margin_in
-            and self.top_bottom_goal_x_min_in <= x <= self.top_bottom_goal_x_max_in
-        ):
+    def in_exclusion_zone(self, x: float, y: float) -> bool:
+        """Any 'red' area a route leg must not cross: out-of-pickup-zone,
+        corners, and (when skip_near_goals) the goals / center X."""
+        if not (self.pickup_x_min_in <= x <= self.pickup_x_max_in):
             return True
-
-        # Top horizontal goal zone
-        if (
-            y > self.field_max_y_in - self.top_bottom_goal_y_margin_in
-            and self.top_bottom_goal_x_min_in <= x <= self.top_bottom_goal_x_max_in
-        ):
+        if self.in_corner_exclusion(x, y):
             return True
+        if self.skip_near_goals and self.near_any_goal(x, y):
+            return True
+        return False
 
+    def segment_hits_exclusion(
+        self, x0: float, y0: float, x1: float, y1: float
+    ) -> bool:
+        """Sample the straight line p0->p1 and return True if it enters any
+        exclusion zone. ~3in sampling step; endpoints are candidate centroids
+        that already passed the per-block filters, so the interior is what matters."""
+        dist = math.hypot(x1 - x0, y1 - y0)
+        steps = max(2, int(dist / 3.0))
+        for i in range(steps + 1):
+            t = i / steps
+            x = x0 + (x1 - x0) * t
+            y = y0 + (y1 - y0) * t
+            if self.in_exclusion_zone(x, y):
+                return True
         return False
 
     def in_field_bounds(self, x: float, y: float) -> bool:

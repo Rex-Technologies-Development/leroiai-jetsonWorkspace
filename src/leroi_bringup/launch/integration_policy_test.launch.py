@@ -118,6 +118,17 @@ def generate_launch_description():
                 "field_map_rotation": "cw",
                 "field_map_alpha": 0.72,
                 "draw_field_grid": True,
+                # Draw the route planner's boundary + exclusion zones on the map
+                # preview. The pickup-zone limit is wired from the SAME launch
+                # args the route planner uses, so the green "PICKUP LIMIT" line
+                # always matches this robot's side (LEFT half for the 24in robot).
+                # The goal / wall / center-X defaults mirror route_planner_node.
+                "draw_planner_zones": True,
+                "planner_pickup_x_min_in": LaunchConfiguration("pickup_x_min_in"),
+                "planner_pickup_x_max_in": LaunchConfiguration("pickup_x_max_in"),
+                # Keep these in sync with the route_planner_node values below.
+                "planner_corner_exclusion_margin_in": 11.81,
+                "planner_goal_skip_scale": 1.15,
                 "robot_trail_max_points": 500,
                 "object_history_sec": 3.0,
                 "target_path_topic": "/robot/command",
@@ -177,10 +188,11 @@ def generate_launch_description():
                 # Drop the MOVE_CHASSIS_ONLY scan step: assess from wherever the
                 # robot is and loop ASSESS -> COLLECT -> SCORE -> ASSESS.
                 "scan_before_assess": False,
-                # Forced demo loop: always COLLECT_BLOCKS -> SCORE_LONG (no goal
-                # assessment / descore), and stop after 2 score-long cycles.
+                # Forced loop: always COLLECT_BLOCKS -> SCORE_LONG (no goal
+                # assessment / descore). max_loops 0 = run forever, looping
+                # COLLECT -> SCORE -> COLLECT -> SCORE until the stack is stopped.
                 "force_collect_score_long": True,
-                "max_loops": 2,
+                "max_loops": 0,
                 # Never score the mid goal: if the plan would, drive home to
                 # (x=48, y=28) instead and skip the mid-goal score.
                 "avoid_mid_goal": True,
@@ -267,6 +279,14 @@ def generate_launch_description():
                 "top_bottom_goal_x_min_in": 47.24,
                 "top_bottom_goal_x_max_in": 96.85,
                 "top_bottom_goal_y_margin_in": 21.65,
+                # Corner exclusion: smaller than wall_margin so the robot can
+                # reach most of each corner (just not all the way in).
+                "corner_exclusion_margin_in": 11.81,
+                # Inflate every goal exclusion rectangle by 15%.
+                "goal_skip_scale": 1.15,
+                # Reject a route leg whose straight path crosses any exclusion
+                # zone; pick the next reachable cluster instead.
+                "reject_route_through_exclusion": True,
                 "publish_empty_route": True,
                 "debug_log_routes": True,
             }

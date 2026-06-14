@@ -99,6 +99,26 @@ class PerceptionNode(Node):
         self.declare_parameter("field_map_alpha", 0.72)
         self.declare_parameter("draw_field_grid", True)
 
+        # Route-planner boundary / exclusion zone overlay. These MIRROR the
+        # leroi_perception route_planner_node parameters; keep them in sync (the
+        # launch file wires the pickup-zone ones from the same LaunchConfiguration
+        # so the "left side limit" always matches what the planner actually uses).
+        self.declare_parameter("draw_planner_zones", True)
+        self.declare_parameter("planner_pickup_x_min_in", 0.0)
+        self.declare_parameter("planner_pickup_x_max_in", 72.0)
+        self.declare_parameter("planner_wall_margin_in", 17.72)
+        self.declare_parameter("planner_corner_exclusion_margin_in", 11.81)
+        self.declare_parameter("planner_goal_skip_scale", 1.15)
+        self.declare_parameter("planner_center_x_radius_in", 11.0)
+        self.declare_parameter("planner_center_x_thickness_in", 5.0)
+        self.declare_parameter("planner_long_goal_x_min_in", 21.0)
+        self.declare_parameter("planner_long_goal_x_max_in", 27.0)
+        self.declare_parameter("planner_long_goal_y_min_in", 48.0)
+        self.declare_parameter("planner_long_goal_y_max_in", 96.0)
+        self.declare_parameter("planner_top_bottom_goal_x_min_in", 47.24)
+        self.declare_parameter("planner_top_bottom_goal_x_max_in", 96.85)
+        self.declare_parameter("planner_top_bottom_goal_y_margin_in", 21.65)
+
         self.declare_parameter("robot_trail_max_points", 500)
         self.declare_parameter("object_history_sec", 3.0)
         # Track each block as one running-averaged position instead of a trail
@@ -199,6 +219,52 @@ class PerceptionNode(Node):
         )
         self.field_map_alpha = float(self.get_parameter("field_map_alpha").value)
         self.draw_field_grid = bool(self.get_parameter("draw_field_grid").value)
+
+        self.draw_planner_zones = bool(
+            self.get_parameter("draw_planner_zones").value
+        )
+        self.planner_pickup_x_min_in = float(
+            self.get_parameter("planner_pickup_x_min_in").value
+        )
+        self.planner_pickup_x_max_in = float(
+            self.get_parameter("planner_pickup_x_max_in").value
+        )
+        self.planner_wall_margin_in = float(
+            self.get_parameter("planner_wall_margin_in").value
+        )
+        self.planner_corner_exclusion_margin_in = float(
+            self.get_parameter("planner_corner_exclusion_margin_in").value
+        )
+        self.planner_goal_skip_scale = float(
+            self.get_parameter("planner_goal_skip_scale").value
+        )
+        self.planner_center_x_radius_in = float(
+            self.get_parameter("planner_center_x_radius_in").value
+        )
+        self.planner_center_x_thickness_in = float(
+            self.get_parameter("planner_center_x_thickness_in").value
+        )
+        self.planner_long_goal_x_min_in = float(
+            self.get_parameter("planner_long_goal_x_min_in").value
+        )
+        self.planner_long_goal_x_max_in = float(
+            self.get_parameter("planner_long_goal_x_max_in").value
+        )
+        self.planner_long_goal_y_min_in = float(
+            self.get_parameter("planner_long_goal_y_min_in").value
+        )
+        self.planner_long_goal_y_max_in = float(
+            self.get_parameter("planner_long_goal_y_max_in").value
+        )
+        self.planner_top_bottom_goal_x_min_in = float(
+            self.get_parameter("planner_top_bottom_goal_x_min_in").value
+        )
+        self.planner_top_bottom_goal_x_max_in = float(
+            self.get_parameter("planner_top_bottom_goal_x_max_in").value
+        )
+        self.planner_top_bottom_goal_y_margin_in = float(
+            self.get_parameter("planner_top_bottom_goal_y_margin_in").value
+        )
 
         self.robot_trail_max_points = int(
             self.get_parameter("robot_trail_max_points").value
@@ -1175,6 +1241,133 @@ class PerceptionNode(Node):
     # Drawing
     # -------------------------------------------------------------------------
 
+    def draw_planner_zone_overlay(self, img):
+        """Overlay the route planner's boundary + exclusion zones on the map.
+
+        Red translucent = no-pickup (long goals, top/bottom goal strips, center
+        X, and the wall corners). Yellow outline = wall margin (blocks inside one
+        margin band get a score penalty; the corners where two bands overlap are
+        excluded). Green line = the pickup-zone x limit -- this robot is only
+        routed to blocks on its side of that line (LEFT half for the 24in robot).
+
+        Uses the same world_to_map_px transform as the robot/route overlays, so
+        it lines up with those. Values mirror route_planner_node (planner_* params).
+        """
+        h, w = img.shape[:2]
+        fminx, fmaxx = self.field_min_x_in, self.field_max_x_in
+        fminy, fmaxy = self.field_min_y_in, self.field_max_y_in
+
+        def in_to_px_x(d):
+            return max(1, int(round(d * self.map_width_px / (fmaxx - fminx))))
+
+        def rect_px(x0, y0, x1, y1):
+            p0 = self.world_to_map_px(x0, y0)
+            p1 = self.world_to_map_px(x1, y1)
+            x_lo, x_hi = sorted((p0[0], p1[0]))
+            y_lo, y_hi = sorted((p0[1], p1[1]))
+            return (x_lo, y_lo), (x_hi, y_hi)
+
+        RED = (60, 60, 255)
+        YELLOW = (0, 215, 255)
+        GREEN = (0, 230, 0)
+
+        def scale_rect(x0, y0, x1, y1, s):
+            cx0 = 0.5 * (x0 + x1)
+            cy0 = 0.5 * (y0 + y1)
+            hw = 0.5 * abs(x1 - x0) * s
+            hh = 0.5 * abs(y1 - y0) * s
+            return cx0 - hw, cy0 - hh, cx0 + hw, cy0 + hh
+
+        # Goal exclusion rectangles (field inches), inflated by goal_skip_scale.
+        s = self.planner_goal_skip_scale
+        goal_rects = [
+            scale_rect(self.planner_long_goal_x_min_in, self.planner_long_goal_y_min_in,
+                       self.planner_long_goal_x_max_in, self.planner_long_goal_y_max_in, s),
+            scale_rect(fmaxx - self.planner_long_goal_x_max_in, self.planner_long_goal_y_min_in,
+                       fmaxx - self.planner_long_goal_x_min_in, self.planner_long_goal_y_max_in, s),
+            scale_rect(self.planner_top_bottom_goal_x_min_in, fminy,
+                       self.planner_top_bottom_goal_x_max_in,
+                       fminy + self.planner_top_bottom_goal_y_margin_in, s),
+            scale_rect(self.planner_top_bottom_goal_x_min_in,
+                       fmaxy - self.planner_top_bottom_goal_y_margin_in,
+                       self.planner_top_bottom_goal_x_max_in, fmaxy, s),
+        ]
+
+        # Corner exclusion squares use their own (smaller) margin, NOT the wall
+        # margin -- the robot can reach most of each corner, just not all the way in.
+        cm = self.planner_corner_exclusion_margin_in
+        corner_rects = [
+            (fminx, fminy, fminx + cm, fminy + cm),
+            (fmaxx - cm, fminy, fmaxx, fminy + cm),
+            (fminx, fmaxy - cm, fminx + cm, fmaxy),
+            (fmaxx - cm, fmaxy - cm, fmaxx, fmaxy),
+        ]
+
+        m = self.planner_wall_margin_in
+
+        # Center X cross: two thick diagonal bars centered on the field.
+        cx = 0.5 * (fminx + fmaxx)
+        cy = 0.5 * (fminy + fmaxy)
+        diag = self.planner_center_x_radius_in / math.sqrt(2.0)
+        bar_t = in_to_px_x(self.planner_center_x_thickness_in)
+        x1a = self.world_to_map_px(cx - diag, cy - diag)
+        x1b = self.world_to_map_px(cx + diag, cy + diag)
+        x2a = self.world_to_map_px(cx - diag, cy + diag)
+        x2b = self.world_to_map_px(cx + diag, cy - diag)
+
+        # Translucent fills on a copy, then blend.
+        overlay = img.copy()
+        for (x0, y0, x1, y1) in goal_rects + corner_rects:
+            a, b = rect_px(x0, y0, x1, y1)
+            cv2.rectangle(overlay, a, b, RED, -1)
+        cv2.line(overlay, x1a, x1b, RED, bar_t)
+        cv2.line(overlay, x2a, x2b, RED, bar_t)
+        # Out-of-pickup-zone columns (x outside [pickup_min, pickup_max]).
+        if self.planner_pickup_x_min_in > fminx:
+            a, b = rect_px(fminx, fminy, self.planner_pickup_x_min_in, fmaxy)
+            cv2.rectangle(overlay, a, b, RED, -1)
+        if self.planner_pickup_x_max_in < fmaxx:
+            a, b = rect_px(self.planner_pickup_x_max_in, fminy, fmaxx, fmaxy)
+            cv2.rectangle(overlay, a, b, RED, -1)
+        cv2.addWeighted(overlay, 0.25, img, 0.75, 0, img)
+
+        # Solid outlines on top.
+        for (x0, y0, x1, y1) in goal_rects:
+            a, b = rect_px(x0, y0, x1, y1)
+            cv2.rectangle(img, a, b, RED, 1)
+        cv2.line(img, x1a, x1b, RED, 1)
+        cv2.line(img, x2a, x2b, RED, 1)
+
+        # Wall-margin band: inside this yellow rectangle = no wall penalty.
+        a, b = rect_px(fminx + m, fminy + m, fmaxx - m, fmaxy - m)
+        cv2.rectangle(img, a, b, YELLOW, 1)
+
+        # Pickup-zone limit line(s) -- the key "side limit".
+        for limit_x in (self.planner_pickup_x_min_in, self.planner_pickup_x_max_in):
+            if fminx < limit_x < fmaxx:
+                top = self.world_to_map_px(limit_x, fmaxy)
+                bot = self.world_to_map_px(limit_x, fminy)
+                cv2.line(img, top, bot, GREEN, 2)
+                cv2.putText(
+                    img,
+                    f"PICKUP LIMIT x={limit_x:.0f}",
+                    (max(2, min(top[0] + 4, w - 160)), 18),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.4,
+                    GREEN,
+                    1,
+                )
+
+        cv2.putText(
+            img,
+            "red=no-pickup  yellow=wall margin  green=pickup limit",
+            (6, h - 8),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            (220, 220, 220),
+            1,
+        )
+
     def draw_field_map(self):
         w = self.map_width_px
         h = self.map_height_px
@@ -1201,6 +1394,11 @@ class PerceptionNode(Node):
                 y = int(h * i / 6)
                 cv2.line(img, (x, 0), (x, h), (80, 80, 80), 1)
                 cv2.line(img, (0, y), (w, y), (80, 80, 80), 1)
+
+        # Planner boundary / exclusion zones, drawn under the dynamic overlays
+        # (robot, blocks, route) so those stay readable on top.
+        if self.draw_planner_zones:
+            self.draw_planner_zone_overlay(img)
 
         with self.robot_pose_lock:
             robot_x = self.robot_x

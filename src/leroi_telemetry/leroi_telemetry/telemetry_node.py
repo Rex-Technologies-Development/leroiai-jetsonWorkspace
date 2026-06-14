@@ -23,6 +23,19 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+# All log timestamps are rendered in US Eastern time, independent of the
+# machine's configured timezone, so logs stay consistent across hosts.
+_EASTERN = ZoneInfo("America/New_York")
+
+
+def eastern_iso(ts: float) -> str:
+    """Human-readable Eastern timestamp, e.g. '2026-06-13 16:50:34.733 EDT'."""
+    dt = datetime.fromtimestamp(ts, _EASTERN)
+    return dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + dt.strftime(" %Z")
+
 
 # Default set of topics to record. Each is std_msgs/String with a JSON payload.
 # Override via the ``topics`` parameter (list of strings) from the launch file.
@@ -192,6 +205,8 @@ class TelemetryNode(Node):
 
         event.setdefault("recv_stamp_ns", self.get_clock().now().nanoseconds)
         event.setdefault("recv_time_unix", time.time())
+        # Render time_iso first so each line opens with a human-readable Eastern time.
+        event = {"time_iso": eastern_iso(event["recv_time_unix"]), **event}
 
         try:
             with open(self.log_path, "a", encoding="utf-8") as f:

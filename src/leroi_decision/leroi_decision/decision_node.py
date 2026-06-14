@@ -8,6 +8,19 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+# All log timestamps are rendered in US Eastern time, independent of the
+# machine's configured timezone, so logs stay consistent across hosts.
+_EASTERN = ZoneInfo("America/New_York")
+
+
+def eastern_iso(ts: float) -> str:
+    """Human-readable Eastern timestamp, e.g. '2026-06-13 16:50:34.733 EDT'."""
+    dt = datetime.fromtimestamp(ts, _EASTERN)
+    return dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + dt.strftime(" %Z")
+
 
 ACTION_NAMES = {
     0: "STOP",
@@ -396,6 +409,7 @@ class DecisionNode(Node):
         now_ns = self.get_clock().now().nanoseconds
 
         event = {
+            "time_iso": eastern_iso(now_unix),
             "event": "COMMAND_SENT",
             "sent_stamp_ns": now_ns,
             "sent_time_unix": now_unix,
